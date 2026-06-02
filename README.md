@@ -95,6 +95,3 @@ A semi-automatic tool for making player/staff face graphics for Football Manager
 - **Face too big / cut off** → step the "Face size" down one level
 - The first run downloads AI models, so it's slow once; later runs are fast
 
----
-
-*Made with help from Claude.*
