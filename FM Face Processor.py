@@ -667,6 +667,7 @@ class App(tk.Tk):
         self.zoom_idx = 3            # 既定: 超アップ
         self.last_out = None
         self.log_lines = []          # ログ本文を保持（言語切替時に再描画はしないが保持用）
+        self.log_has_content = False # 実処理のログが出たらTrue（案内文だけならFalse）
         self.style = ttk.Style()
         self._init_vars()
         self._preload_settings()     # 言語・テーマ・各値をウィジェット生成前に読み込む
@@ -843,9 +844,11 @@ class App(tk.Tk):
         if self.log_lines:
             self.log.insert("end", "\n".join(self.log_lines) + "\n")
             self.log.see("end")
+            self.log_has_content = True
         else:
             self._log(t("顔写真とIDスクショを同じフォルダに入れて「実行」を押してください。",
                         "Put face photos and ID screenshots in one folder, then press Run."))
+            self.log_has_content = False   # 案内文だけ＝中身なし扱い
         self._refresh_theme_btn()
 
     # ---------- テーマ ----------
@@ -916,8 +919,12 @@ class App(tk.Tk):
         self._save_settings()
 
     def _toggle_lang(self):
-        # 現在のログ本文を保持して言語切替→画面を作り直す
-        self.log_lines = self.log.get("1.0", "end-1c").split("\n") if hasattr(self, "log") else []
+        # ログが「最初の案内文だけ」の状態なら復元せず、新しい言語で案内文を出し直す。
+        # 実処理のログが出ている場合のみ、内容を保持して引き継ぐ。
+        if getattr(self, "log_has_content", False):
+            self.log_lines = self.log.get("1.0", "end-1c").split("\n") if hasattr(self, "log") else []
+        else:
+            self.log_lines = []
         self.lang = "en" if self.lang == "ja" else "ja"
         set_lang(self.lang)
         self._build()
@@ -978,6 +985,7 @@ class App(tk.Tk):
 
     def _log(self, msg):
         self.log.insert("end", msg + "\n"); self.log.see("end")
+        self.log_has_content = True
 
     def _poll(self):
         try:
@@ -1041,6 +1049,7 @@ class App(tk.Tk):
         self.open_btn.config(state="disabled")
         self.pb.configure(value=0)
         self.log.delete("1.0", "end")
+        self.log_has_content = False
 
         def worker():
             err = ""
