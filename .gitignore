@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# アプリが作る作業物・出力（リポジトリには含めない）
+processed/
+weights/
+*.png
+*.jpg
+*.jpeg
+*.webp
+config.xml
+
+# アプリの設定ファイル（個人のパスが入るため）
+.fm_face_processor.json
+
+# OS
+.DS_Store
+Thumbs.db
