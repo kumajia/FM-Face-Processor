@@ -3,12 +3,16 @@
 顔写真とID入りスクショを入れるだけで、背景を抜いて顔を切り抜き、Football Manager用のファイル一式を作るツールです。
 *Drop in a face photo and an ID screenshot — it removes the background, crops the face, and builds the files for Football Manager.*
 
+![App screenshot](screenshot.png)
+
 ---
 
 ## 日本語
 
 ### これは何？
 FM（Football Manager）の選手・スタッフの顔グラフィックを半自動で作るツールです。顔写真と、その人のFM内ID（例: `ID: 50053056`）が写ったスクショを用意するだけで、高画質化・背景透過・顔まわりの切り抜き・サイズ調整をして、`config.xml` まで自動で作ります。
+
+![Before / After](before_after.png)
 
 ### できること
 - 画像を拡大（高画質化）
