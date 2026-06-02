@@ -40,6 +40,7 @@ except Exception:  # noqa: BLE001
     HAS_SVTTK = False
 
 SUPPORTED_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
+APP_VERSION = "v1.0.0"
 # 「ID」に続く数字（FMのperson ID）を拾う
 ID_RE = re.compile(r"id[^0-9]{0,6}(\d{2,})", re.IGNORECASE)
 
@@ -657,7 +658,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("FM Face Processor")
+        self.title(f"FM Face Processor {APP_VERSION}")
         self.geometry("720x700")
         self.minsize(640, 600)
         self.q = queue.Queue()
@@ -754,7 +755,9 @@ class App(tk.Tk):
 
         header = ttk.Frame(outer); header.pack(fill="x", pady=(0, 12))
         titles = ttk.Frame(header); titles.pack(side="left")
-        ttk.Label(titles, text="FM Face Processor", style="Header.TLabel").pack(anchor="w")
+        titlerow = ttk.Frame(titles); titlerow.pack(anchor="w")
+        ttk.Label(titlerow, text="FM Face Processor", style="Header.TLabel").pack(side="left")
+        ttk.Label(titlerow, text=APP_VERSION, style="Ver.TLabel").pack(side="left", anchor="s", padx=(8, 0), pady=(0, 3))
         ttk.Label(titles, text=t("顔画像＋IDスクショ → 透過PNG ＋ config.xml",
                                   "Face + ID screenshot -> transparent PNG + config.xml"),
                   style="Sub.TLabel").pack(anchor="w")
@@ -878,6 +881,7 @@ class App(tk.Tk):
         s.configure("Header.TLabel", background=pal["bg"], foreground=pal["fg"],
                     font=("Segoe UI Semibold", 17))
         s.configure("Sub.TLabel", background=pal["bg"], foreground=pal["sub"], font=("Segoe UI", 9))
+        s.configure("Ver.TLabel", background=pal["bg"], foreground=pal["sub"], font=("Segoe UI", 9))
         s.configure("TLabelframe", background=pal["bg"], bordercolor=pal["border"],
                     relief="solid", borderwidth=1)
         s.configure("TLabelframe.Label", background=pal["bg"], foreground=pal["accent"],
