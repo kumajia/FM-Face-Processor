@@ -14,6 +14,8 @@ FM（Football Manager）の選手・スタッフの顔グラフィックを半�
 
 ![Before / After](before_after.png)
 
+> サンプル画像はAI生成（Google Gemini）の人物で、実在の選手ではありません。
+
 ### できること
 - 画像を拡大（高画質化）
 - 背景を消して透過PNG化（モデル選択・髪のフチ調整あり）
@@ -55,6 +57,8 @@ FM（Football Manager）の選手・スタッフの顔グラフィックを半�
 
 ### What is this?
 A semi-automatic tool for making player/staff face graphics for Football Manager. Give it a face photo and a screenshot showing that person's in-game ID (e.g. `ID: 50053056`); it upscales the image, removes the background, crops around the face, resizes, and builds `config.xml` for you.
+
+> The sample image uses an AI-generated person (Google Gemini), not a real player.
 
 ### Features
 - Upscale images
