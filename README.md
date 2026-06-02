@@ -33,7 +33,7 @@ FM（Football Manager）の選手・スタッフの顔グラフィックを半�
 
 ### 最初の準備（1回だけ）
 1. **Python Install Manager** を入れる（Microsoft Storeで「Python Install Manager」を検索して「入手」。これが今の公式の推奨方法です）
-2. インストール後にコマンドプロンプト（検索バーに `cmd`）を開き、3.12を入れる:
+2. インストール後にコマンドプロンプトを開く（**画面左下のスタートボタン（Windowsロゴ）を押す → そのまま `cmd` とキーボードで打つ → 出てきた「コマンドプロンプト」をクリック**）。開いたら3.12を入れる:
    ```
    py install 3.12
    ```
@@ -77,7 +77,7 @@ A semi-automatic tool for making player/staff face graphics for Football Manager
 
 ### First-time setup (once)
 1. Install the **Python Install Manager** (search "Python Install Manager" in the Microsoft Store and click Get — this is the current recommended method)
-2. After installing, open Command Prompt (type `cmd` in the search bar) and install 3.12:
+2. After installing, open Command Prompt (**click the Start button / Windows logo at the bottom-left, type `cmd` on the keyboard, then click "Command Prompt"**), and install 3.12:
    ```
    py install 3.12
    ```
