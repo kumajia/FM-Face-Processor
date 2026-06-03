@@ -14,6 +14,10 @@ weights/
 *.webp
 config.xml
 
+# ただしREADME用の画像は含める
+!screenshot.png
+!before_after.png
+
 # アプリの設定ファイル（個人のパスが入るため）
 .fm_face_processor.json
 

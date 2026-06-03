@@ -40,7 +40,7 @@ except Exception:  # noqa: BLE001
     HAS_SVTTK = False
 
 SUPPORTED_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
-APP_VERSION = "v1.0.0"
+APP_VERSION = "v1.1.0"
 # 「ID」に続く数字（FMのperson ID）を拾う
 ID_RE = re.compile(r"id[^0-9]{0,6}(\d{2,})", re.IGNORECASE)
 
@@ -161,6 +161,87 @@ def fit_to_size(img, size, mode):
 
 
 _face_cascade = None
+_face_cascade_alt = None
+_yunet = None
+_yunet_tried = False
+
+YUNET_FILENAME = "face_detection_yunet_2023mar.onnx"
+
+
+def _find_yunet_model():
+    """同梱されたYuNetモデル(.onnx)を探す。スクリプトと同じ場所などを順に確認。"""
+    import sys
+    cands = []
+    try:
+        here = Path(__file__).resolve().parent
+        cands += [here / YUNET_FILENAME, here / "models" / YUNET_FILENAME]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        cands.append(Path(sys.argv[0]).resolve().parent / YUNET_FILENAME)
+    except Exception:  # noqa: BLE001
+        pass
+    cands.append(Path.cwd() / YUNET_FILENAME)
+    for p in cands:
+        try:
+            if p.is_file():
+                return str(p)
+        except Exception:  # noqa: BLE001
+            pass
+    return None
+
+
+def _get_yunet(log):
+    """YuNet検出器を用意。モデルが無ければ None（Haarにフォールバック）。"""
+    global _yunet, _yunet_tried
+    if _yunet_tried:
+        return _yunet
+    _yunet_tried = True
+    try:
+        import cv2
+        if not hasattr(cv2, "FaceDetectorYN"):
+            log(t("  [i] 高精度の顔検出は使えません（OpenCVが古い）。簡易検出で続行します。",
+                  "  [i] High-accuracy face detection unavailable (old OpenCV). Using basic detection."))
+            return None
+        path = _find_yunet_model()
+        if not path:
+            log(t("  [i] 顔検出モデル(.onnx)が見つかりません。簡易検出で続行します。",
+                  "  [i] Face model (.onnx) not found. Using basic detection."))
+            return None
+        _yunet = cv2.FaceDetectorYN.create(path, "", (320, 320), 0.6, 0.3, 5000)
+        log(t("  [i] 高精度の顔検出（YuNet）を使用します。",
+              "  [i] Using high-accuracy face detection (YuNet)."))
+    except Exception as e:  # noqa: BLE001
+        log(t(f"  [i] 顔検出モデルを読み込めませんでした（簡易検出で続行）: {e}",
+              f"  [i] Could not load face model (using basic detection): {e}"))
+        _yunet = None
+    return _yunet
+
+
+def detect_face_box_yunet(img, log):
+    """YuNetで顔の (x, y, w, h) を返す。使えなければ None。"""
+    det = _get_yunet(log)
+    if det is None:
+        return None
+    try:
+        import cv2  # noqa: F401
+        import numpy as np
+        bgr = np.array(img.convert("RGB"))[:, :, ::-1].copy()
+        h, w = bgr.shape[:2]
+        det.setInputSize((w, h))
+        _, faces = det.detect(bgr)
+        if faces is None or len(faces) == 0:
+            return None
+        boxes = []
+        for f in faces:
+            bx, by, bw, bh = float(f[0]), float(f[1]), float(f[2]), float(f[3])
+            boxes.append((bx, by, bw, bh))
+        upper = [b for b in boxes if (b[1] + b[3] / 2) < h * 0.55]
+        pool = upper if upper else boxes
+        bx, by, bw, bh = max(pool, key=lambda b: b[2] * b[3])
+        return int(round(bx)), int(round(by)), int(round(bw)), int(round(bh))
+    except Exception as e:  # noqa: BLE001
+        return None
 
 
 def _get_face_cascade():
@@ -172,59 +253,94 @@ def _get_face_cascade():
     return _face_cascade
 
 
-def detect_face_box(img, log):
-    """最大の顔の (x, y, w, h) を返す。検出できなければ None。"""
-    try:
+def _get_face_cascade_alt():
+    global _face_cascade_alt
+    if _face_cascade_alt is None:
         import cv2
+        path = cv2.data.haarcascades + "haarcascade_frontalface_alt2.xml"
+        _face_cascade_alt = cv2.CascadeClassifier(path)
+    return _face_cascade_alt
+
+
+def detect_face_box(img, log):
+    """顔の (x, y, w, h) を返す。検出できなければ None。
+    高精度なYuNet（同梱の.onnx）を優先し、無い/取れない場合はHaarで再試行する。"""
+    try:
+        import cv2  # noqa: F401
         import numpy as np
     except Exception as e:  # noqa: BLE001
         log(t(f"  [i] OpenCV未導入のため顔トリミングをスキップ ({e})", f"  [i] OpenCV not installed; skipping face crop ({e})"))
         return None
+    yb = detect_face_box_yunet(img, log)
+    if yb is not None:
+        return yb
     try:
-        cascade = _get_face_cascade()
+        import cv2
         arr = np.array(img.convert("RGB"))
         gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
-        faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5,
-                                         minSize=(40, 40))
+        # 小さい画像は検出用に一時的に拡大（出力には影響しない）
+        det_scale = 1.0
+        min_dim = min(gray.shape[0], gray.shape[1])
+        if min_dim < 700:
+            det_scale = 700.0 / min_dim
+            gray = cv2.resize(gray, None, fx=det_scale, fy=det_scale,
+                              interpolation=cv2.INTER_LINEAR)
+        img_h = gray.shape[0]
+
+        casc = _get_face_cascade()
+        casc_alt = _get_face_cascade_alt()
+        # 1回で取れないことがあるので、検出器と条件を変えながら順に試す
+        attempts = [
+            (casc,     {"scaleFactor": 1.1,  "minNeighbors": 5}),
+            (casc_alt, {"scaleFactor": 1.1,  "minNeighbors": 4}),
+            (casc,     {"scaleFactor": 1.05, "minNeighbors": 3}),
+            (casc_alt, {"scaleFactor": 1.05, "minNeighbors": 2}),
+        ]
+        faces = []
+        used = -1
+        for i, (c, kw) in enumerate(attempts):
+            faces = c.detectMultiScale(gray, minSize=(40, 40), **kw)
+            if len(faces) > 0:
+                used = i
+                break
         if len(faces) == 0:
             return None
-        x, y, w, h = max(faces, key=lambda b: b[2] * b[3])
-        return int(x), int(y), int(w), int(h)
+        # ポートレートでは顔は上側にある。胸/ユニフォーム柄の誤検出を避けるため、
+        # 顔の中心が画像の上55%にあるものを優先する。
+        upper = [f for f in faces if (f[1] + f[3] / 2) < img_h * 0.55]
+        pool = upper if upper else list(faces)
+        x, y, w, h = max(pool, key=lambda b: b[2] * b[3])
+        # 検出用に拡大していた場合は座標を元のスケールへ戻す
+        if det_scale != 1.0:
+            x, y, w, h = (x / det_scale, y / det_scale, w / det_scale, h / det_scale)
+        return int(round(x)), int(round(y)), int(round(w)), int(round(h))
     except Exception as e:  # noqa: BLE001
         log(t(f"  [i] 顔検出に失敗（全体を使用）: {e}", f"  [i] Face detection failed (using whole image): {e}"))
         return None
 
 
-def crop_around_face(img, box, neck, headroom):
-    """頭頂〜首あたりを正方形に切り出す（肩は出さない）。
-    neck: 顎より下にどれだけ伸ばすか（顔の高さ基準。小さいほど首だけ）
-    headroom: 頭頂の上に取る余白（顔の高さ基準）。
-    背景除去後ならアルファから頭頂を正確に取得し、なければ顔枠から推定する。"""
+def crop_around_face(img, box, size_factor, neck):
+    """顔の高さを基準に正方形サイズを決め、下端は顎のすぐ下（首）で固定する。
+    髪の量に左右されず、常に首で切れる（髪が極端に高い人は天辺が少し切れる）。
+    size_factor: 正方形の一辺 = 顔の高さ × この値（大きいほど顔は小さく写る）
+    neck: 顎より下にどれだけ伸ばすか（顔の高さ基準。小さいほど首だけ）"""
     from PIL import Image
     img = img.convert("RGBA")
     x, y, w, h = box
     cx = x + w / 2.0
     chin = y + h
-    a = img.getchannel("A")
-    lo, _ = a.getextrema()
-    if lo < 255:                         # 透明部分あり＝背景除去済み → 頭頂を正確に
-        abox = a.getbbox()
-        head_top = abox[1] if abox else (y - 0.45 * h)
-    else:                                # 背景ありのときは顔枠から推定
-        head_top = y - 0.45 * h
-    head_top = min(head_top, y - 0.05 * h)
-    top = head_top - headroom * h
-    bottom = chin + neck * h             # ← ここで下を「首」で止める
-    side = max(1, int(round(bottom - top)))
+    side = max(1, int(round(h * size_factor)))
+    bottom = chin + neck * h          # 下端＝顎のすぐ下（首）。髪に依存しない
+    top = int(round(bottom - side))   # 上端＝下端から正方形ぶん上（髪はここまで入る）
     left = int(round(cx - side / 2.0))
     canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
-    canvas.paste(img, (-left, -int(round(top))))
+    canvas.paste(img, (-left, -top))
     return canvas
 
 
-def crop_to_subject(img, neck, headroom, log):
+def crop_to_subject(img, size_factor, neck, log):
     """顔検出が空振りした時の保険。背景除去後のアルファから人物の輪郭を求め、
-    首〜頭を概算して正方形で切り出す。"""
+    顔の高さを概算して、顔基準・首固定で正方形に切り出す。"""
     from PIL import Image
     img = img.convert("RGBA")
     a = img.getchannel("A")
@@ -238,15 +354,14 @@ def crop_to_subject(img, neck, headroom, log):
     sw = right_b - left_b
     cx = left_b + sw / 2.0
     face_h = sw * 0.5 * 1.3              # 肩幅から顔の高さを概算
-    head_top = top_b
-    chin = head_top + face_h * 1.55
-    top = head_top - headroom * face_h
+    chin = top_b + face_h * 1.55        # 頭頂から顎までを概算
+    side = max(1, int(round(face_h * size_factor)))
     bottom = chin + neck * face_h
-    side = max(1, int(round(bottom - top)))
+    top = int(round(bottom - side))
     left = int(round(cx - side / 2.0))
     canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
-    canvas.paste(img, (-left, -int(round(top))))
-    log(t("  [i] 顔は未検出。輪郭から首〜頭を推定して切り出しました", "  [i] No face detected; cropped from silhouette (head/neck estimate)"))
+    canvas.paste(img, (-left, -top))
+    log(t("  [i] 顔は未検出。輪郭から推定して切り出しました", "  [i] No face detected; cropped from silhouette estimate"))
     return canvas
 
 
@@ -255,10 +370,19 @@ def process_one(src, out_path, opts, log):
     from PIL import Image, ImageOps
     img = Image.open(src); img.load()
     img = ImageOps.exif_transpose(img)
+    orig_w, orig_h = img.size
+    # 顔検出は「拡大前の等倍画像」で行う。
+    # （拡大後の画像で検出すると本物の顔を見失い、胸の柄などを誤検出することがある）
+    box = detect_face_box(img, log) if opts.get("face_crop") else None
     if opts["upscale"]:
         img = upscale(img, opts["scale"], opts["esrgan_model"], opts["ai_upscale"], log)
-    # 顔検出は背景があるうちに行うほうが安定
-    box = detect_face_box(img, log) if opts.get("face_crop") else None
+        # 拡大したぶん、顔枠の座標も同じ倍率で合わせる
+        if box is not None and orig_w and img.size[0] != orig_w:
+            sx = img.size[0] / orig_w
+            sy = img.size[1] / orig_h
+            bx, by, bw, bh = box
+            box = (int(round(bx * sx)), int(round(by * sy)),
+                   int(round(bw * sx)), int(round(bh * sy)))
     if opts["bg_removal"]:
         try:
             img = remove_background(img, opts["rembg_model"], opts.get("alpha_matting", False))
@@ -272,12 +396,12 @@ def process_one(src, out_path, opts, log):
         img = img.convert("RGBA")
     if opts.get("face_crop"):
         if box:
-            img = crop_around_face(img, box, opts.get("face_neck", 0.30),
-                                   opts.get("face_headroom", 0.06))
+            img = crop_around_face(img, box, opts.get("face_size", 1.7),
+                                   opts.get("face_neck", 0.12))
             log(t("  [i] 顔を検出してトリミングしました", "  [i] Face detected and cropped"))
         else:
-            c = crop_to_subject(img, opts.get("face_neck", 0.30),
-                                opts.get("face_headroom", 0.06), log)
+            c = crop_to_subject(img, opts.get("face_size", 1.7),
+                                opts.get("face_neck", 0.12), log)
             if c is not None:
                 img = c
     img = fit_to_size(img, opts["size"], opts["fit"])
@@ -645,8 +769,8 @@ def set_titlebar_dark(window, dark=True):
 # GUI
 # ==========================================================================
 # 顔の大きさプリセット（言語非依存の内部キー＋表示ラベル）
-ZOOM_NECK = [0.45, 0.30, 0.18, 0.08]       # index 0..3
-ZOOM_HEAD = [0.10, 0.06, 0.03, 0.00]
+ZOOM_SIZE = [2.3, 1.95, 1.7, 1.5]          # ゆったり/標準/アップ/超アップ（顔の高さ×倍率）
+ZOOM_NECK = [0.20, 0.15, 0.12, 0.10]       # 顎より下のマージン
 ZOOM_LABELS = {
     "ja": ["ゆったり", "標準", "アップ", "超アップ"],
     "en": ["Loose", "Normal", "Close", "Very close"],
@@ -822,7 +946,7 @@ class App(tk.Tk):
                         variable=self.append_var).grid(row=2, column=1, sticky="w", padx=(0, 16), pady=2)
         ttk.Checkbutton(chk, text=t("作成済みでも作り直す", "Overwrite existing"),
                         variable=self.ow_var).grid(row=2, column=2, sticky="w", pady=2)
-        ttk.Checkbutton(chk, text=t("生成選手（newgen）に対応する", "Add r- prefix for newgen players"),
+        ttk.Checkbutton(chk, text=t("生成選手（newgen）に対応する（IDへ r- を付ける）", "Add r- prefix for newgen players"),
                         variable=self.newgen_var).grid(row=3, column=0, columnspan=3, sticky="w", pady=2)
 
         act = ttk.Frame(outer); act.pack(fill="x", pady=(0, 8))
@@ -1024,8 +1148,8 @@ class App(tk.Tk):
                 "scale": float(self.scale_var.get()),
                 "ocr_id": self.ocr_var.get(),
                 "face_crop": self.facecrop_var.get(),
+                "face_size": ZOOM_SIZE[idx],
                 "face_neck": ZOOM_NECK[idx],
-                "face_headroom": ZOOM_HEAD[idx],
                 "upscale": self.upscale_var.get(),
                 "ai_upscale": self.ai_var.get(),
                 "bg_removal": self.bg_var.get(),

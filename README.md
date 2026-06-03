@@ -44,6 +44,7 @@ FM（Football Manager）の選手・スタッフの顔グラフィックを半�
    py -3.12 -m pip install pillow "rembg[cpu]" rapidocr-onnxruntime opencv-python
    ```
 4. `FM Face Processor.py` をダブルクリックで起動
+   - ダウンロードした **ファイルはすべて同じフォルダにまとめておいてください**（顔検出モデル `face_detection_yunet_2023mar.onnx` も同じ場所にあると、より正確に顔を検出します）
 
 ### 困ったとき
 - **背景が抜けない** → `py -3.12 -m pip install "rembg[cpu]"` を実行し、アプリのウィンドウを一度閉じてから開き直す（PCの再起動ではありません）
@@ -88,6 +89,7 @@ A semi-automatic tool for making player/staff face graphics for Football Manager
    py -3.12 -m pip install pillow "rembg[cpu]" rapidocr-onnxruntime opencv-python
    ```
 4. Double-click `FM Face Processor.py` to launch
+   - **Keep all downloaded files together in one folder** (with the face model `face_detection_yunet_2023mar.onnx` in the same place, faces are detected more accurately)
 
 ### Troubleshooting
 - **Background not removed** → run `py -3.12 -m pip install "rembg[cpu]"`, then close and reopen the app window (not a PC restart)

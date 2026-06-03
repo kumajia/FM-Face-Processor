@@ -19,3 +19,17 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+--------------------------------------------------------------------------
+
+THIRD-PARTY COMPONENTS
+
+This project bundles the YuNet face detection model
+(face_detection_yunet_2023mar.onnx), distributed under the MIT License.
+
+  YuNet / libfacedetection
+  Copyright (c) Shiqi Yu and contributors
+  https://github.com/ShiqiYu/libfacedetection
+  Model distribution: https://github.com/opencv/opencv_zoo
+  Reference: Wu, W., Peng, H., Yu, S. "YuNet: A Tiny Millisecond-level
+  Face Detector." Machine Intelligence Research 20(5), 656-665 (2023).
