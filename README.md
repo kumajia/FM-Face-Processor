@@ -11,7 +11,7 @@ Football Manager 用の選手・スタッフ顔グラフィックを半自動で
 
 ---
 
-## できること
+## できることh
 
 | 機能 | 説明 |
 |------|------|
@@ -33,7 +33,7 @@ Football Manager 用の選手・スタッフ顔グラフィックを半自動で
 ```
 FM Face Processor_v1.x.x/
 ├── FM Face Processor.py
-├── face_detection_yunet_2023mar.onnx   ← 顔検出モデル（リリースに同梱）
+├── face_detection_yunet_2023mar.onnx   ← 顔検出モデル（リリースに同梱）（リリースに同梱）
 ├── Real-ESRGAN-x4plus.onnx             ← 高画質化モデル
 └── real_esrgan_x4plus.data
 ```
