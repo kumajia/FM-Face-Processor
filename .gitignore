@@ -1,0 +1,15 @@
+# モデルファイル（大容量）
+*.onnx
+*.data
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 出力フォルダ
+crop_preview_out/
+
+# その他
+.DS_Store
+Thumbs.db
