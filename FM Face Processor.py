@@ -825,6 +825,62 @@ def send_to_trash(path):
                          "Could not move to Recycle Bin (send2trash not installed)"))
 
 
+def write_config(uids, cfg_path, append=True, newgen=False):
+    """config.xml に uid のレコードを書き込む（追記 or 上書き）。
+    戻り値: (追加件数, 合計件数)"""
+    existing = []
+    if append and cfg_path.exists():
+        text = cfg_path.read_text(encoding="utf-8", errors="replace")
+        for line in text.splitlines():
+            m = re.search(r'from=["\'](\d+)["\']', line)
+            if m:
+                existing.append(m.group(1))
+    existing_set = set(existing)
+    new_uids = [u for u in uids if u not in existing_set]
+    prefix = "r-" if newgen else ""
+    lines_to_add = [
+        f'  <record from="{u}" to="faces/{prefix}{u}"/>\n'
+        for u in new_uids
+    ]
+    if append and cfg_path.exists():
+        text = cfg_path.read_text(encoding="utf-8", errors="replace")
+        close = text.rfind("</graphics>")
+        if close != -1:
+            new_text = text[:close] + "".join(lines_to_add) + text[close:]
+        else:
+            new_text = text.rstrip() + "\n" + "".join(lines_to_add)
+        cfg_path.write_text(new_text, encoding="utf-8")
+    else:
+        header = '<?xml version="1.0" encoding="utf-8"?>\n<graphics>\n'
+        footer = "</graphics>\n"
+        cfg_path.write_text(header + "".join(lines_to_add) + footer, encoding="utf-8")
+    total = len(existing) + len(new_uids) if append else len(new_uids)
+    return len(new_uids), total
+
+
+def dedupe_config(cfg_path):
+    """config.xml の重複 from 属性を除去して上書き保存。
+    バックアップを .bak に作成する。
+    戻り値: (出力パス, 除去件数, 残り件数)"""
+    text = cfg_path.read_text(encoding="utf-8", errors="replace")
+    seen = set()
+    out_lines = []
+    removed = 0
+    for line in text.splitlines(keepends=True):
+        m = re.search(r'from=["\'](\d+)["\']', line)
+        if m:
+            uid = m.group(1)
+            if uid in seen:
+                removed += 1
+                continue
+            seen.add(uid)
+        out_lines.append(line)
+    bak = cfg_path.with_name(cfg_path.name + ".bak")
+    shutil.copy2(cfg_path, bak)
+    cfg_path.write_text("".join(out_lines), encoding="utf-8")
+    return cfg_path, removed, len(seen)
+
+
 def process_folder(opts, log, progress=None):
     in_dir = Path(opts["input"]); out_dir = Path(opts["output"])
     if not in_dir.is_dir():
