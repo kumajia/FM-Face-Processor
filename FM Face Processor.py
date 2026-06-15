@@ -23,6 +23,7 @@ OCRを使わず「ファイル名＝ID」で動かすことも可能（チェッ
 import io
 import os
 import re
+import shutil
 import json
 import queue
 import sys
