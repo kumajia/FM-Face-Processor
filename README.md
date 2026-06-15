@@ -2,9 +2,9 @@
 
 **顔写真 + IDスクショ → FMポートレート + config.xml を全自動生成**
 
-![Python](https://img.shields.io/badge/Python-3.12-blue)
-![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)
-![License](https://img.shields.io/badge/License-MIT-green)
+[![Python](https://img.shields.io/badge/Python-3.12-blue)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)](https://www.microsoft.com/windows)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 Football Manager 用の選手・スタッフ顔グラフィックを半自動で作るツールです。顔写真とFM内IDのスクショを放り込むだけで、高画質化・背景透過・顔トリミング・config.xml 生成まで全部やります。
 
