@@ -1964,4 +1964,18 @@ class App(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
 if __name__ == "__main__":
+    # ── 多重起動防止 ─────────────────────────────────────────
+    import ctypes as _ctypes
+    _mutex = _ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\FMFaceProcessor_v1")
+    if _ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        _root = tk.Tk()
+        _root.withdraw()
+        from tkinter import messagebox as _mb
+        _mb.showwarning(
+            "FM Face Processor",
+            "すでに起動しています。\n既存のウィンドウを確認してください。"
+        )
+        _root.destroy()
+        raise SystemExit(0)
+    # ──────────────────────────────────────────────────────────
        App().mainloop()
