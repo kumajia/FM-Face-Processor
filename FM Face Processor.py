@@ -43,7 +43,7 @@ except Exception:  # noqa: BLE001
     HAS_SVTTK = False
 
 SUPPORTED_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
-APP_VERSION = "v1.2.0"
+APP_VERSION = "v1.2.3"
 # 「ID」に続く数字（FMのperson ID）を拾う
 ID_RE = re.compile(r"id[^0-9]{0,6}(\d{2,})", re.IGNORECASE)
 
