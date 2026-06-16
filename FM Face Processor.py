@@ -481,8 +481,11 @@ def detect_face_box_yunet(img, log):
         import numpy as np
         bgr = np.array(img.convert("RGB"))[:, :, ::-1].copy()
         img_h, img_w = bgr.shape[:2]
-        det.setInputSize((img_w, img_h))
-        _, faces = det.detect(bgr)
+        # スレッド安全性: YuNet検出器インスタンスは共有のため、setInputSize〜detectを
+        # 1つのロックで保護する（並列実行時の "Unknown C++ exception" 対策）
+        with _yunet_lock:
+            det.setInputSize((img_w, img_h))
+            _, faces = det.detect(bgr)
         if faces is None or len(faces) == 0:
             return None
         # 上半分の顔を優先（胸のロゴ・柄の誤検出を排除）
@@ -569,11 +572,14 @@ def detect_face_box(img, log):
         ]
         faces = []
         used = -1
-        for i, (c, kw) in enumerate(attempts):
-            faces = c.detectMultiScale(gray, minSize=(40, 40), **kw)
-            if len(faces) > 0:
-                used = i
-                break
+        # スレッド安全性: Haarカスケード検出器も共有インスタンスのため、
+        # detectMultiScale 呼び出し全体をロックで保護する
+        with _cascade_lock:
+            for i, (c, kw) in enumerate(attempts):
+                faces = c.detectMultiScale(gray, minSize=(40, 40), **kw)
+                if len(faces) > 0:
+                    used = i
+                    break
         if len(faces) == 0:
             return None
         # ポートレートでは顔は上側にある。胸/ユニフォーム柄の誤検出を避けるため、
@@ -826,6 +832,7 @@ def send_to_trash(path):
                          "Could not move to Recycle Bin (send2trash not installed)"))
 
 
+
 def write_config(uids, cfg_path, append=True, newgen=False):
     """config.xml に uid のレコードを書き込む（追記 or 上書き）。
     戻り値: (追加件数, 合計件数)"""
@@ -880,6 +887,54 @@ def dedupe_config(cfg_path):
     shutil.copy2(cfg_path, bak)
     cfg_path.write_text("".join(out_lines), encoding="utf-8")
     return cfg_path, removed, len(seen)
+
+
+def process_one(path, out_path, opts, log):
+    """1枚の顔写真を実際に加工する処理本体。
+    顔トリミング -> アップスケール -> 背景除去 -> 指定サイズへリサイズ -> PNG保存。
+    保存できたら True、プレビューでスキップ/キャンセルされたり失敗した場合は False を返す。"""
+    from PIL import Image
+    img = Image.open(path).convert("RGBA")
+    debug = opts.get("debug")
+
+    if opts.get("face_crop", True):
+        det = detect_face_box(img, log)
+        if det is not None:
+            box, eye_mid_y, eye_mid_x, nose_x = det
+            if debug:
+                log(t(f"  [debug] 顔box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x}",
+                      f"  [debug] face box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x}"))
+            img = crop_around_face(img, box, opts.get("face_size", 2.20), opts.get("face_neck", 0.10),
+                                    log=log, eye_mid_y=eye_mid_y, eye_mid_x=eye_mid_x, nose_x=nose_x)
+        elif debug:
+            log(t("  [debug] 顔を検出できませんでした（全体を使用）",
+                  "  [debug] face not detected (using full image)"))
+
+    if opts.get("upscale", True):
+        img = upscale(img, float(opts.get("scale", 1.0)),
+                      opts.get("esrgan_model", "RealESRGAN_x4plus"),
+                      opts.get("ai_upscale", False), log)
+
+    if opts.get("bg_removal", True):
+        img = remove_background(img, opts.get("rembg_model", "isnet-general-use"),
+                                alpha_matting=opts.get("alpha_matting", False), log=log,
+                                removebg_key=opts.get("removebg_key"))
+
+    img = fit_to_size(img, int(opts.get("size", 180)), opts.get("fit", "contain"))
+
+    preview = opts.get("_preview")
+    if preview is not None:
+        decision = preview(img)
+        if decision == "cancel":
+            cancel = opts.get("_cancel")
+            if cancel is not None:
+                cancel.set()
+            return False
+        if decision == "skip":
+            return False
+
+    img.save(out_path, "PNG")
+    return True
 
 
 def process_folder(opts, log, progress=None):
@@ -1964,7 +2019,7 @@ class App(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
 if __name__ == "__main__":
-    # ── 多重起動防止 ─────────────────────────────────────────
+    # ── 多重起動防止 ──────────────────────────────────────────
     import ctypes as _ctypes
     _mutex = _ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\FMFaceProcessor_v1")
     if _ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
@@ -1978,4 +2033,4 @@ if __name__ == "__main__":
         _root.destroy()
         raise SystemExit(0)
     # ──────────────────────────────────────────────────────────
-       App().mainloop()
+    App().mainloop()
