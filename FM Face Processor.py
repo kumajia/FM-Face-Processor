@@ -21,7 +21,6 @@ OCRを使わず「ファイル名＝ID」で動かすことも可能（チェッ
   # ドラッグ＆ドロップ: py -3.12 -m pip install tkinterdnd2 （任意・未導入でも全機能使える）
 """
 
-import csv
 import io
 import os
 import re
@@ -1026,51 +1025,6 @@ def pair_by_time(faces, ids):
 # ==========================================================================
 # 一括処理（モード分岐）
 # ==========================================================================
-ID_MAP_FILENAME = "ids.csv"
-ID_EDITOR_MAX_ROWS = 400        # 一覧に並べる上限（多すぎるとウィンドウ生成が重い）
-
-
-def id_map_path(in_dir):
-    return Path(in_dir) / ID_MAP_FILENAME
-
-
-def read_id_map(in_dir):
-    """入力フォルダの ids.csv を {ファイル名: ID} で返す。無ければ空dict。
-    「ファイル名, ID」の2列。1行目がヘッダなら読み飛ばす。
-    Excelで開いて編集されることを想定して BOM 付きUTF-8も受ける。"""
-    path = id_map_path(in_dir)
-    if not path.exists():
-        return {}
-    mapping = {}
-    try:
-        with path.open("r", encoding="utf-8-sig", newline="") as fp:
-            for i, row in enumerate(csv.reader(fp)):
-                if len(row) < 2:
-                    continue
-                name, uid = row[0].strip(), row[1].strip()
-                if not name or not uid:
-                    continue
-                if i == 0 and not uid.isdigit():
-                    continue                      # ヘッダ行
-                mapping[name] = uid
-    except Exception:  # noqa: BLE001
-        return {}
-    return mapping
-
-
-def write_id_map(in_dir, mapping):
-    """{ファイル名: ID} を ids.csv に保存する。IDが空の行は書かない。"""
-    path = id_map_path(in_dir)
-    with path.open("w", encoding="utf-8-sig", newline="") as fp:
-        w = csv.writer(fp)
-        w.writerow(["filename", "id"])
-        for name, uid in mapping.items():
-            uid = str(uid).strip()
-            if uid:
-                w.writerow([name, uid])
-    return path
-
-
 def out_filename(uid, opts):
     """出力PNGのファイル名。newgen 指定なら "r-" を付ける。
     config.xml の from= はファイル名と一致していなければならないため、
@@ -1441,23 +1395,6 @@ def process_folder(opts, log, progress=None):
 
     files = sorted(f for f in in_dir.iterdir() if f.suffix.lower() in SUPPORTED_EXT)
 
-    # 対応表（ids.csv）があれば最優先。ペアフォルダもIDスクショもOCRも不要。
-    id_map = read_id_map(in_dir)
-    if id_map:
-        targets = [f for f in files if f.name in id_map]
-        missing = [f for f in files if f.name not in id_map]
-        log(t(f"対応表モード（{ID_MAP_FILENAME}）: {len(targets)} 件",
-              f"ID map mode ({ID_MAP_FILENAME}): {len(targets)} file(s)"))
-        if missing:
-            log(t(f"  [!] 対応表にIDが無い画像 {len(missing)} 枚はスキップします: ",
-                  f"  [!] {len(missing)} image(s) missing from the ID map are skipped: ")
-                + ", ".join(f.name for f in missing[:10]) + (" …" if len(missing) > 10 else ""))
-        if not targets:
-            log(t(f"[!] {ID_MAP_FILENAME} に載っている画像が1枚もありません。",
-                  f"[!] None of the images are listed in {ID_MAP_FILENAME}.")); return
-        _run_idmap_mode(targets, id_map, out_dir, opts, log, progress)
-        return
-
     if subdirs:
         log(t(f"サブフォルダ（ペア）モード: {len(subdirs)} フォルダ", f"Subfolder (pair) mode: {len(subdirs)} folders"))
         if files:
@@ -1581,11 +1518,6 @@ def _run_subfolder_mode(subdirs, out_dir, opts, log, progress):
     _finish(uids, out_dir, opts, log)
 
 
-def _run_idmap_mode(files, id_map, out_dir, opts, log, progress):
-    """ids.csv の「ファイル名 -> ID」に従って処理する。ペアリングもOCRも行わない。"""
-    _run_uid_list(files, [id_map[f.name] for f in files], out_dir, opts, log, progress)
-
-
 def _run_filename_mode(files, out_dir, opts, log, progress):
     """ファイル名（拡張子を除く）をそのままIDとして使う。"""
     _run_uid_list(files, [f.stem for f in files], out_dir, opts, log, progress,
@@ -1593,8 +1525,7 @@ def _run_filename_mode(files, out_dir, opts, log, progress):
 
 
 def _run_uid_list(files, uid_list, out_dir, opts, log, progress, require_digits=True):
-    """「画像 -> UID」が確定しているリストをまとめて処理する共通ルーチン。
-    ファイル名モードと対応表モードで中身が同じだったため1本にまとめてある。"""
+    """「画像 -> UID」が確定しているリストをまとめて処理する共通ルーチン。"""
     cancel = opts.get("_cancel")
     workers = max(1, int(opts.get("workers", 1)))
     items = list(zip(files, uid_list))
@@ -2091,12 +2022,9 @@ class App(tk.Tk):
         prow = ttk.Frame(fld); prow.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
         # 実行中に押されると処理中のファイルを壊すので、まとめて無効化できるようにする
         self._busy_btns = []
-        b = ttk.Button(prow, text=t("一覧でIDを割り当てる", "Assign IDs from a list"),
-                       command=self._open_id_editor)
-        b.pack(side="left"); self._busy_btns.append(b)
         b = ttk.Button(prow, text=t("ペアフォルダを作る", "Make pair folders"),
                        command=self._make_pair_folders)
-        b.pack(side="left", padx=(8, 0)); self._busy_btns.append(b)
+        b.pack(side="left"); self._busy_btns.append(b)
         b = ttk.Button(prow, text=t("入力元画像をゴミ箱へ", "Trash source images"),
                        command=self._delete_source_images)
         b.pack(side="left", padx=(8, 0)); self._busy_btns.append(b)
