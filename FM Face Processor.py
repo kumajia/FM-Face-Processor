@@ -1892,7 +1892,7 @@ class App(tk.Tk):
             return default
 
     def _collect_settings(self):
-        return {
+        settings = {
             "mode": self.mode, "lang": self.lang,
             "face_size": self._get_num(self.face_size_var, DEFAULT_FACE_SIZE),
             "input": self.in_var.get(), "output": self.out_var.get(),
@@ -1907,11 +1907,16 @@ class App(tk.Tk):
             "lowpower": self.lowpower_var.get(),
             "workers": self._get_num(self.workers_var, 1),
             "save_log": self.save_log_var.get(),
-            # APIキーは機密情報なので設定ファイルへ保存しない。
             "use_removebg": self.use_removebg_var.get(),
             "overwrite": self.ow_var.get(),
             "debug": self.debug_var.get(),
         }
+        # APIキーはこのPC内の設定ファイルだけに保存する。
+        # 空欄で保存した場合は、旧版が保存したキーを勝手に削除しない。
+        removebg_key = self.removebg_var.get().strip()
+        if removebg_key:
+            settings["removebg_key"] = removebg_key
+        return settings
 
     def _preload_settings(self):
         try:
@@ -1924,6 +1929,12 @@ class App(tk.Tk):
         # 値をそのまま信用すると、ウィンドウが出る前に落ちて起動不能になる。
         if not isinstance(d, dict):
             return
+        # 旧版を含むremove.bg認証項目は本人のPC内だけで再利用する。
+        # 値は画面上では伏せ字のまま表示し、配布物には含めない。
+        for value in _legacy_removebg_secret_items(d).values():
+            if isinstance(value, str) and value.strip():
+                self.removebg_var.set(value.strip())
+                break
         if d.get("mode") in ("dark", "light"):
             self.mode = d["mode"]
         if d.get("lang") in ("ja", "en"):
@@ -1967,8 +1978,8 @@ class App(tk.Tk):
 
     def _save_settings(self):
         try:
-            # 新しく入力したAPIキーは保存しない。ただし旧版が既に保存したキーは、
-            # 設定保存の副作用で勝手に削除しない（配布物にも読み込まない）。
+            # APIキーは本人のPC内だけに保存する。旧版が既に保存したキーも、
+            # 設定保存の副作用で勝手に削除しない。配布物には設定ファイルを含めない。
             previous = {}
             if self.SETTINGS_PATH.exists():
                 try:
@@ -1977,7 +1988,8 @@ class App(tk.Tk):
                 except Exception:  # noqa: BLE001
                     previous = {}
             settings = self._collect_settings()
-            settings.update(_legacy_removebg_secret_items(previous))
+            for key, value in _legacy_removebg_secret_items(previous).items():
+                settings.setdefault(key, value)
             _atomic_write_text(
                 self.SETTINGS_PATH,
                 json.dumps(settings, ensure_ascii=False, indent=2),
@@ -2123,8 +2135,8 @@ class App(tk.Tk):
                         command=self._on_removebg_toggle).pack(side="left")
 
         self._apikey_frame = rowk = ttk.Frame(opt)
-        ttk.Label(rowk, text=t("remove.bg APIキー（保存しません）",
-                               "remove.bg API key (not saved)")).pack(side="left")
+        ttk.Label(rowk, text=t("remove.bg APIキー（このPC内だけに保存）",
+                               "remove.bg API key (saved only on this PC)")).pack(side="left")
         self._apikey_entry = ttk.Entry(rowk, textvariable=self.removebg_var, width=30, show="●")
         self._apikey_entry.pack(side="left", padx=(6, 0))
         self._apikey_show = tk.BooleanVar(value=False)

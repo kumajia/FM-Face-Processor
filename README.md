@@ -8,13 +8,7 @@ v2.0.0では、Python不要のWindows EXEとAIモデルを配布ZIPへ同梱し�
 
 `EXE\FM Face Processor\FM Face Processor.exe` をダブルクリックしてください。Pythonのインストールは不要です。EXEだけを移動せず、`FM Face Processor` フォルダごと使用してください。
 
-ソース版を使う場合は、次の順で起動します。
-
-1. Python 3.12（64bit）をインストールします。
-2. 最初の1回だけ `setup.bat` をダブルクリックします。
-3. 以後は `start.bat` をダブルクリックします。
-
-セットアップ時と、ローカル背景除去モデルを初めて使うときはインターネット接続が必要です。
+GitHubのソース版を使う場合はPython 3.12（64bit）で `pip install -r requirements.txt` を実行し、その後 `python "FM Face Processor.py"` で起動できます。初回のライブラリ準備と、ローカル背景除去モデルを初めて使うときはインターネット接続が必要です。
 
 ## 基本操作
 
@@ -36,7 +30,7 @@ OCRの組み合わせ結果は、処理前にログで確認してください�
 
 ## remove.bgについて
 
-remove.bgを有効にすると、処理対象の顔画像がremove.bgへ送信されます。利用規約とプライバシー要件を確認して使用してください。新しく入力したAPIキーはアプリの設定ファイルへ保存されず、起動のたびに入力が必要です。旧バージョンがすでに保存したキー項目は自動削除せず保持しますが、アプリは読み込まず、配布ZIPやEXEにも含めません。
+remove.bgを有効にすると、処理対象の顔画像がremove.bgへ送信されます。利用規約とプライバシー要件を確認して使用してください。APIキーは本人のPC内にある設定ファイルだけへ保存し、画面では伏せ字で表示します。旧バージョンが保存したキーも勝手に削除せず再利用します。設定ファイルとAPIキーはGitHub、配布ZIP、EXEには含めません。
 
 ## データ保護
 
@@ -45,32 +39,17 @@ remove.bgを有効にすると、処理対象の顔画像がremove.bgへ送信�
 - 「入力元画像をゴミ箱へ」は確認画面を表示し、完全削除ではなくWindowsのごみ箱へ移動します。
 - 大切な素材は、このアプリとは別の場所にも保管してください。
 
-## EXE版を自分で作る場合
+## 配布ZIPの内容
 
-`setup.bat` の完了後に `build_exe.bat` を実行します。完成物は `dist\FM Face Processor\` に作られます。フォルダ一式を配布してください。
-
-## GitHubへ公開する場合
-
-- リポジトリには、ソースコード・requirements・bat・README・仕様書を登録します。
-- `EXE` フォルダと配布ZIPはコミットせず、GitHub ReleasesへZIPだけを添付します。
-- `.fm_face_processor.json`、APIキー、顔画像、出力画像、処理ログは絶対に登録しません。
-- 詳細は `GITHUB公開手順.md` を参照してください。
-
-## 主な同梱ファイル
-
-- `FM Face Processor.py`: アプリ本体
-- `face_detection_yunet_2023mar.onnx`: 顔検出モデル
-- `Real-ESRGAN-x4plus.onnx` / `real_esrgan_x4plus.data`: AI高画質化モデル
-- `requirements.txt`: 実行に必要なライブラリ
-- `setup.bat`: 初回セットアップ
-- `start.bat`: 通常起動
-- `build_exe.bat`: 配布用EXEの作成
-- `EXE\FM Face Processor\`: Python不要の実行版
+- `EXE\FM Face Processor\`: Python不要の実行版と必要なAIモデル一式
+- `README.md`: 使い方と注意事項
 - `FM_Face_Processor_仕様書_v2.0.0_Dark.docx`: ダーク背景の仕様書・操作ガイド
+
+GitHubリポジトリには、確認・再利用に必要なアプリ本体、`requirements.txt`、README、仕様書だけを登録しています。
 
 ## 動作対象
 
 - Windows 10 / 11（64bit）
-- Python 3.12（64bit）
+- ソース版のみPython 3.12（64bit）が必要
 
 バージョン: v2.0.0
