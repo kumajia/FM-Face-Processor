@@ -1,144 +1,76 @@
-# FM Face Processor
+# FM Face Processor v2.0.0
 
-**顔写真 + IDスクショ → FMポートレート + config.xml を全自動生成**
+Football Manager向けの顔画像を、透過PNGと `config.xml` にまとめるWindows用ツールです。
 
-[![Python](https://img.shields.io/badge/Python-3.12-blue)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)](https://www.microsoft.com/windows)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+v2.0.0では、Python不要のWindows EXEとAIモデルを配布ZIPへ同梱しました。ダーク／ライトテーマ、日本語／英語切替、保存処理の安全化、表示レイアウトの改善も含まれます。
 
-Football Manager 用の選手・スタッフ顔グラフィックを半自動で作るツールです。顔写真とFM内IDのスクショを放り込むだけで、高画質化・背景透過・顔トリミング・config.xml 生成まで全部やります。
+## いちばん簡単な起動方法
 
+`EXE\FM Face Processor\FM Face Processor.exe` をダブルクリックしてください。Pythonのインストールは不要です。EXEだけを移動せず、`FM Face Processor` フォルダごと使用してください。
 
----
+ソース版を使う場合は、次の順で起動します。
 
-## できること
+1. Python 3.12（64bit）をインストールします。
+2. 最初の1回だけ `setup.bat` をダブルクリックします。
+3. 以後は `start.bat` をダブルクリックします。
 
-| 機能 | 説明 |
-|------|------|
-| 🔍 顔検出 | YuNet（高精度）+ Haar カスケードでフォールバック |
-| 🖼️ 高画質化 | Real-ESRGAN x4 で拡大 |
-| ✂️ 背景透過 | rembg で透過 PNG 化（モデル選択・髪のフチ調整あり） |
-| 🎯 顔トリミング | 目〜顎の距離で正規化、肩が写らない正方形クロップ |
-| 🔢 ID 自動読取 | RapidOCR でスクショから ID を認識 → `<ID>.png` で保存 |
-| 📄 config.xml 生成 | 実行のたびに追記、重複 ID はスキップ |
-| 👶 newgen 対応 | ID に `r-` プレフィックスを付けるオプション |
-| 🌐 UI | 日本語 / 英語、ダーク / ライト テーマ、設定の保存 |
+セットアップ時と、ローカル背景除去モデルを初めて使うときはインターネット接続が必要です。
 
----
+## 基本操作
 
-## 必要なファイル
+1. 入力フォルダへ顔写真とFMのIDスクリーンショットを入れます。
+2. アプリで入力・出力フォルダを選びます。
+3. 必要なオプションを確認して「実行」を押します。
+4. 出力先に `<ID>.png`、`config.xml`、処理ログが生成されます。
 
-リリースページからダウンロードして、**すべて同じフォルダ**に置いてください。
+入力と出力には別のフォルダを指定してください。同じフォルダが選ばれた場合は、元画像保護のため処理を開始しません。
 
-```
-FM Face Processor_v1.x.x/
-├── FM Face Processor.py
-├── face_detection_yunet_2023mar.onnx   ← 顔検出モデル（リリースに同梱）（リリースに同梱）
-├── Real-ESRGAN-x4plus.onnx             ← 高画質化モデル
-└── real_esrgan_x4plus.data
-```
+## IDの割り当て方法
 
-> `Real-ESRGAN-x4plus.onnx` と `real_esrgan_x4plus.data` はサイズが大きいため含まれていません。別途入手してください。
+- OCRモード: 横長のIDスクリーンショットからIDを読み、撮影時刻が近い顔写真と組み合わせます。
+- ファイル名モード: 「IDを自動で読み取る」をOFFにし、顔画像を `<ID>.jpg` などの名前にします。
+- サブフォルダモード: 1人分ずつサブフォルダへ分けます。数字のファイル名またはフォルダ名もIDとして使えます。
+- 対応表モード: 「一覧でIDを割り当てる」で `ids.csv` を作成します。最も確実な方法です。
 
----
+OCRの組み合わせ結果は、処理前にログで確認してください。重要なフェイスパックでは「保存前にプレビュー」も推奨します。
 
-## セットアップ（初回のみ）
+## remove.bgについて
 
-### 1. Python 3.12 を入れる
+remove.bgを有効にすると、処理対象の顔画像がremove.bgへ送信されます。利用規約とプライバシー要件を確認して使用してください。新しく入力したAPIキーはアプリの設定ファイルへ保存されず、起動のたびに入力が必要です。旧バージョンがすでに保存したキー項目は自動削除せず保持しますが、アプリは読み込まず、配布ZIPやEXEにも含めません。
 
-Microsoft Store で **Python Install Manager** を検索して「入手」し、インストール後にコマンドプロンプトを開いて実行：
+## データ保護
 
-```
-py install 3.12
-```
+- PNGと `config.xml` は、一時ファイルへ完成させてから置換します。
+- 既存 `config.xml` の上書き・再生成前には、日時付き `.bak` を作成します。
+- 「入力元画像をゴミ箱へ」は確認画面を表示し、完全削除ではなくWindowsのごみ箱へ移動します。
+- 大切な素材は、このアプリとは別の場所にも保管してください。
 
-途中の質問は以下の通りに答えてください：
+## EXE版を自分で作る場合
 
-- `Add commands directory to your PATH now?` → **y**
-- `Install CPython now?` → **n**（最新版を避けるため）
-- `View online help?` → **n**
+`setup.bat` の完了後に `build_exe.bat` を実行します。完成物は `dist\FM Face Processor\` に作られます。フォルダ一式を配布してください。
 
-確認：`py list` で `3.12` が表示されれば OK
+## GitHubへ公開する場合
 
-### 2. ライブラリを入れる
+- リポジトリには、ソースコード・requirements・bat・README・仕様書を登録します。
+- `EXE` フォルダと配布ZIPはコミットせず、GitHub ReleasesへZIPだけを添付します。
+- `.fm_face_processor.json`、APIキー、顔画像、出力画像、処理ログは絶対に登録しません。
+- 詳細は `GITHUB公開手順.md` を参照してください。
 
-```
-py -3.12 -m pip install pillow "rembg[cpu]" rapidocr-onnxruntime opencv-python
-```
+## 主な同梱ファイル
 
-### 3. 起動
+- `FM Face Processor.py`: アプリ本体
+- `face_detection_yunet_2023mar.onnx`: 顔検出モデル
+- `Real-ESRGAN-x4plus.onnx` / `real_esrgan_x4plus.data`: AI高画質化モデル
+- `requirements.txt`: 実行に必要なライブラリ
+- `setup.bat`: 初回セットアップ
+- `start.bat`: 通常起動
+- `build_exe.bat`: 配布用EXEの作成
+- `EXE\FM Face Processor\`: Python不要の実行版
+- `FM_Face_Processor_仕様書_v2.0.0_Dark.docx`: ダーク背景の仕様書・操作ガイド
 
-`FM Face Processor.py` をダブルクリック
+## 動作対象
 
-> 初回実行時は AI モデルの自動ダウンロードがあるため時間がかかります（2 回目以降は速い）
+- Windows 10 / 11（64bit）
+- Python 3.12（64bit）
 
----
-
-## 使い方
-
-1. フォルダに「顔写真」と「ID スクショ」を入れる
-   - ペアが複数あるときは **サブフォルダに分ける**と確実
-2. アプリで入力フォルダを選んで「実行」
-3. 出力フォルダに透過 PNG 一式と `config.xml` が生成される
-4. それを FM のグラフィックフォルダに入れて、ゲーム内でスキンを再読み込み
-
----
-
-## トラブルシューティング
-
-| 症状 | 対処 |
-|------|------|
-| 背景が抜けない | `py -3.12 -m pip install "rembg[cpu]"` を実行してアプリを再起動 |
-| ID が読めない | 「ID を自動で読み取る」を外し、ファイル名を ID にする（例: `50053056.jpg`） |
-| 顔が大きすぎ / 切れる | 「顔の大きさ」を一段戻す |
-
----
-
-## English
-
-**Face photo + ID screenshot → FM portrait + config.xml, fully automated**
-
-A semi-automatic tool for Football Manager face graphics. Drop in a face photo and an ID screenshot — it upscales, removes the background, crops the face, and generates `config.xml` automatically.
-
-### Features
-- Face detection (YuNet + Haar fallback)
-- 4× upscaling via Real-ESRGAN
-- Background removal to transparent PNG (rembg, with hair-edge smoothing)
-- Normalized square crop based on eye-to-chin distance (no shoulders)
-- OCR-based ID reading → saves as `<ID>.png`
-- Auto-generates `config.xml` (appends each run, deduplicates IDs)
-- Newgen support (`r-` prefix option)
-- Japanese / English UI, dark / light theme, persistent settings
-
-### Setup (once)
-
-1. Install **Python Install Manager** from the Microsoft Store, then:
-   ```
-   py install 3.12
-   ```
-2. Install libraries:
-   ```
-   py -3.12 -m pip install pillow "rembg[cpu]" rapidocr-onnxruntime opencv-python
-   ```
-3. Double-click `FM Face Processor.py` to launch.
-
-### Files needed
-
-Download from the Releases page and keep all files in the same folder:
-- `FM Face Processor.py`
-- `face_detection_yunet_2023mar.onnx`
-- `Real-ESRGAN-x4plus.onnx` + `real_esrgan_x4plus.data`
-
-### Troubleshooting
-
-| Issue | Fix |
-|-------|-----|
-| Background not removed | Run `py -3.12 -m pip install "rembg[cpu]"` and reopen the app |
-| ID not detected | Uncheck "Auto-read ID" and name the file as the ID (e.g. `50053056.jpg`) |
-| Face too big / cut off | Lower the "Face size" setting by one step |
-
----
-
-## 更新履歴 / Changelog
-
-[Releases ページ](https://github.com/kumajia/FM-Face-Processor/releases)をご覧ください。
+バージョン: v2.0.0

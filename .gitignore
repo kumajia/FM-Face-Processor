@@ -1,15 +1,29 @@
-# モデルファイル（大容量）
+# Local Python/build files
+.venv/
+__pycache__/
+*.py[cod]
+build/
+dist/
+EXE/
+*.spec
+
+# Local/private application data
+.fm_face_processor.json
+.env
+*.key
+processing_log_*.txt
+processed/
+
+# Release archives and user images
+*.zip
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.bmp
+*.tif
+*.tiff
+
+# Large bundled AI models belong in GitHub Releases
 *.onnx
 *.data
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-
-# 出力フォルダ
-crop_preview_out/
-
-# その他
-.DS_Store
-Thumbs.db

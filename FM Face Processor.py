@@ -18,8 +18,10 @@ OCRを使わず「ファイル名＝ID」で動かすことも可能（チェッ
   py -3.12 -m pip install rapidocr-onnxruntime   # ← ID自動読み取り（軽量・torch不要）
   # AI高画質化を使う場合のみ: Real-ESRGAN-x4plus.onnx をアプリと同じフォルダに置く（torch不要・onnxruntimeで動作）
   # 見た目をWin11風に: py -3.12 -m pip install sv-ttk （任意）
+  # ドラッグ＆ドロップ: py -3.12 -m pip install tkinterdnd2 （任意・未導入でも全機能使える）
 """
 
+import csv
 import io
 import os
 import re
@@ -42,10 +44,22 @@ try:
 except Exception:  # noqa: BLE001
     HAS_SVTTK = False
 
+# ドラッグ＆ドロップ（任意）: py -3.12 -m pip install tkinterdnd2
+# 未導入でも従来どおり「…」ボタンから選べるので、機能はすべて使える。
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+    HAS_DND = True
+except Exception:  # noqa: BLE001
+    TkinterDnD = None
+    DND_FILES = None
+    HAS_DND = False
+
 SUPPORTED_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
-APP_VERSION = "v1.2.3"
+APP_VERSION = "v2.0.0"
 # 「ID」に続く数字（FMのperson ID）を拾う
-ID_RE = re.compile(r"id[^0-9]{0,6}(\d{2,})", re.IGNORECASE)
+# FMのperson IDは5桁以上。2桁以上を拾うと "Real Madrid 2024 Unique ID 1928374651"
+# のような文字列で年号や背番号を先に拾ってしまうため下限を上げてある。
+ID_RE = re.compile(r"id[^0-9]{0,6}(\d{5,})", re.IGNORECASE)
 
 # ----- 言語切替（日本語/英語）-----
 _LANG = "ja"
@@ -135,8 +149,14 @@ def _esrgan_enhance(sess, img_rgb, log):
         ph, pw = tile.shape[0], tile.shape[1]
         oh = th if th else ph
         ow = tw if tw else pw
+        # 端のタイルはモデル入力サイズに満たない。0（＝黒）で埋めると
+        # 受容野の広いRRDBが黒を巻き込んで端が暗く濁るので、辺の色を複製して埋める。
         padded = np.zeros((oh, ow, 3), np.float32)
         padded[:ph, :pw] = tile
+        if ph < oh:
+            padded[ph:, :pw] = tile[-1:, :]
+        if pw < ow:
+            padded[:, pw:] = padded[:, pw - 1:pw]
         x = padded.transpose(2, 0, 1)[None]
         y = sess.run(None, {inp.name: x})[0][0].transpose(1, 2, 0)
         y = np.clip(y, 0.0, 1.0)
@@ -151,18 +171,41 @@ def _esrgan_enhance(sess, img_rgb, log):
     step_h = max(1, tile_h - overlap)
     step_w = max(1, tile_w - overlap)
     for y0 in range(0, H, step_h):
+        # 最後のタイルは画像の端にぴったり寄せる（はみ出し分をパディングで埋めない）
+        y0 = min(y0, max(0, H - tile_h))
         for x0 in range(0, W, step_w):
+            x0 = min(x0, max(0, W - tile_w))
             tile = arr[y0:y0 + tile_h, x0:x0 + tile_w]
             res = run_tile(tile)
             oy, ox = y0 * scale, x0 * scale
             rh, rw = res.shape[0], res.shape[1]
             out[oy:oy + rh, ox:ox + rw] += res
             cnt[oy:oy + rh, ox:ox + rw] += 1.0
-            if y0 + tile_h >= H and x0 + tile_w >= W:
+            if x0 + tile_w >= W:
                 break
+        if y0 + tile_h >= H:
+            break
     cnt[cnt == 0] = 1.0
     out = (out / cnt * 255.0).clip(0, 255).astype(np.uint8)
     return Image.fromarray(out)
+
+
+def _fill_transparent(img):
+    """透明部分を近くの前景色で埋めたRGB画像を返す（超解像時の黒にじみ対策）。"""
+    try:
+        import numpy as np
+        import cv2
+        from PIL import Image
+        arr = np.asarray(img.convert("RGBA"), dtype=np.uint8)
+        a = arr[..., 3]
+        if int(a.min()) > 250:
+            return img.convert("RGB")
+        rgb = np.ascontiguousarray(arr[..., :3])
+        mask = (a < 250).astype(np.uint8)
+        filled = cv2.inpaint(rgb, mask, 3, cv2.INPAINT_TELEA)
+        return Image.fromarray(filled, "RGB")
+    except Exception:  # noqa: BLE001
+        return img.convert("RGB")
 
 
 def upscale(img, factor, model_name, use_ai, log):
@@ -173,11 +216,18 @@ def upscale(img, factor, model_name, use_ai, log):
         sess = _get_esrgan(log)
         if sess is not None:
             try:
-                out = _esrgan_enhance(sess, img, log)   # 4倍に超解像
+                # Real-ESRGANはRGBしか扱えずアルファを落とすので、退避しておく
+                alpha = img.getchannel("A") if img.mode == "RGBA" else None
+                # 透明部のRGBは0（黒）なので、そのまま渡すと輪郭に黒がにじむ。
+                # 前景の色で埋めてから超解像し、あとでアルファを戻す。
+                out = _esrgan_enhance(sess, _fill_transparent(img) if alpha else img, log)
                 # 目標倍率に合わせて仕上げ（4倍より小さければ縮小）
                 tw, th = int(img.width * factor), int(img.height * factor)
                 if (out.width, out.height) != (tw, th):
                     out = out.resize((tw, th), Image.LANCZOS)
+                if alpha is not None:
+                    out = out.convert("RGBA")
+                    out.putalpha(alpha.resize(out.size, Image.LANCZOS))
                 return out
             except Exception as e:  # noqa: BLE001
                 log(t(f"  [!] AI高画質化中にエラー -> 通常拡大 ({e})",
@@ -233,6 +283,22 @@ def set_process_priority(low):
         pass
 
 
+def is_already_cutout(img, min_ratio=0.05):
+    """入力画像が既に背景除去済み（透過PNG）かどうかを判定する。
+    透過済みの画像を再度背景除去にかけると、透明部分が黒として扱われ、
+    黒髪や暗い服が背景と区別できずに削られてしまうため、その前段で使う。"""
+    try:
+        if img.mode != "RGBA":
+            return False
+        alpha = img.getchannel("A")
+        if alpha.getextrema()[0] > 250:      # 完全不透明＝ただのRGBA画像
+            return False
+        transparent = sum(alpha.histogram()[:8])
+        return transparent > img.width * img.height * float(min_ratio)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def remove_background(img, model_name, alpha_matting=False, log=None, removebg_key=None):
     """背景除去。remove.bg のAPIキーがあればそちらを優先（髪の品質が高い）。
     失敗時やキー無しはローカルAIで処理。メモリ不足時は軽量モデルで再試行。"""
@@ -260,7 +326,9 @@ def remove_background(img, model_name, alpha_matting=False, log=None, removebg_k
                     work = Image.fromarray(wa, "RGBA")
                 except Exception:  # noqa: BLE001
                     pass
-                out = _defringe(work)
+                out = work
+            # サイズが同じで返ってきた場合も同じ後処理を通す（小さい入力だけ品質が変わるのを防ぐ）
+            out = _defringe(out, src=img)
             if log:
                 log(t("  [i] remove.bg で背景を除去しました", "  [i] Background removed via remove.bg"))
             return out
@@ -273,9 +341,10 @@ def remove_background(img, model_name, alpha_matting=False, log=None, removebg_k
     except Exception as e:  # noqa: BLE001
         msg = str(e)
         if ("llocate" in msg or "memory" in msg.lower()) and model_name != "u2net":
-            global _rembg_sessions
-            _rembg_sessions = {}
             import gc
+            with _rembg_lock:
+                # 再束縛すると、ロック内で辞書を触っている別スレッドと食い違う
+                _rembg_sessions.clear()
             gc.collect()
             if log:
                 log(t("  [i] メモリ不足のため、軽量モデル(u2net)で再試行します…",
@@ -339,12 +408,18 @@ def _remove_background_once(img, model_name, alpha_matting=False, max_side=1600)
         alpha = out.getchannel("A").resize(work.size, Image.LANCZOS)
         work.putalpha(alpha)
         out = work
-    return _defringe(out)
+    # 背景色の推定には「除去前」の画像を渡す（rembg は透明部のRGBを0にするため）
+    return _defringe(out, src=img)
 
 
-def _defringe(img):
+def _defringe(img, src=None):
     """髪のフチなど半透明部分に混ざった背景色を引き算して、色のにじみを消す。
-    背景色は「透明になった領域の元の色」から推定する（単色背景に特に有効）。"""
+    背景色は「透明になった領域の元の色」から推定する（単色背景に特に有効）。
+
+    src には背景除去『前』の画像を渡すこと。背景除去『後』の画像は、
+    透明になった部分のRGBが (0,0,0) にクリアされている場合があり
+    （rembg の naive_cutout、および元から透過PNGだった入力）、
+    それを背景色として採用すると「黒＝背景」と誤認して黒髪に穴が開く。"""
     try:
         import numpy as np
         from PIL import Image
@@ -353,7 +428,35 @@ def _defringe(img):
         bg_mask = a < 0.04
         if bg_mask.sum() < 100:
             return img
-        bg = np.median(arr[..., :3][bg_mask], axis=0)    # 背景色の推定（中央値＝文字等に強い）
+        # 背景色の参照元。除去前の画像があればそちらを使う（RGBが残っているため）
+        ref = arr[..., :3]
+        if src is not None:
+            try:
+                if src.size == img.size:
+                    ref = np.asarray(src.convert("RGBA"), dtype=np.float32)[..., :3]
+            except Exception:  # noqa: BLE001
+                pass
+        # 背景色は「前景のすぐ外側」から推定する。遠くの領域や、
+        # crop_around_face が付ける透明パディングまで混ぜると推定が狂うため。
+        ring = bg_mask
+        try:
+            import cv2 as _cv2
+            near = _cv2.dilate((a >= 0.04).astype(np.uint8), np.ones((13, 13), np.uint8))
+            r = bg_mask & (near > 0)
+            if r.sum() >= 100:
+                ring = r
+        except Exception:  # noqa: BLE001
+            pass
+        bg_pixels = ref[ring]
+        # RGBが完全に0の画素は背景色ではなく「透明パディング / 0クリア跡」なので除外
+        keep = bg_pixels.max(axis=1) > 0
+        if int(keep.sum()) >= 50:
+            bg_pixels = bg_pixels[keep]
+        # 参照できる背景がほぼ真っ黒＝実際の背景色ではない（0クリア済み or 元から透過）。
+        # 背景色を推定できないので、色補正もかけら剥がしも行わない（穴あき防止）。
+        if float(bg_pixels.max()) < 8.0:
+            return img
+        bg = np.median(bg_pixels, axis=0)                # 背景色の推定（中央値＝文字等に強い）
         semi = (a > 0.02) & (a < 0.98)                   # 半透明のフチ
         if semi.any():
             al = a[semi][:, None]
@@ -402,10 +505,15 @@ def fit_to_size(img, size, mode):
         r = img.resize((new_w, new_h), Image.LANCZOS)
         left, top = (new_w - size) // 2, (new_h - size) // 2
         return r.crop((left, top, left + size, top + size))
-    work = img.copy()
-    work.thumbnail(target, Image.LANCZOS)
+    # Image.thumbnail は縮小しかしない（小さい画像が透明枠付きのまま出てしまう）ので
+    # 拡大・縮小の両方に効く明示的なリサイズを使う
+    r = min(size / img.width, size / img.height)
+    work = img if r == 1.0 else img.resize(
+        (max(1, round(img.width * r)), max(1, round(img.height * r))), Image.LANCZOS)
     canvas = Image.new("RGBA", target, (0, 0, 0, 0))
-    canvas.paste(work, ((size - work.width) // 2, (size - work.height) // 2), work)
+    # mask を渡すとアルファ同士が乗算されて（out.A = A*A/255）フチが二重に薄くなるため渡さない。
+    # 貼り先は完全透明なので単純コピーでよい。
+    canvas.paste(work, ((size - work.width) // 2, (size - work.height) // 2))
     return canvas
 
 
@@ -491,24 +599,31 @@ def detect_face_box_yunet(img, log):
         # 上半分の顔を優先（胸のロゴ・柄の誤検出を排除）
         upper = [f for f in faces if (float(f[1]) + float(f[3]) / 2) < img_h * 0.55]
         pool = upper if upper else list(faces)
-        # 面積 × 信頼度スコアで選択（スコアは index 4）
-        best = max(pool, key=lambda f: float(f[2]) * float(f[3]) * float(f[4]))
+        # YuNetの1行は15要素:
+        #   [0..3]  = x, y, w, h
+        #   [4,5]   = 右目 x,y      [6,7]  = 左目 x,y     [8,9] = 鼻 x,y
+        #   [10,11] = 右口角 x,y    [12,13]= 左口角 x,y
+        #   [14]    = 信頼度スコア
+        # ※ スコアは index 4 ではない。4〜13 はランドマーク10要素。
+        def _score(f):
+            return float(f[14]) if len(f) >= 15 else 1.0
+        # 面積 × 信頼度スコアで選択
+        best = max(pool, key=lambda f: float(f[2]) * float(f[3]) * _score(f))
         bx, by, bw, bh = float(best[0]), float(best[1]), float(best[2]), float(best[3])
-        # YuNetランドマーク配列: [4]=スコア, [5,6]=右目xy, [7,8]=左目xy, [9,10]=鼻, ...
         eye_mid_y = None
         eye_mid_x = None  # 目の水平中点（横ズレ補正用）
         nose_x = None     # 鼻のx座標（目が使えない時の横ズレ補正フォールバック）
-        if len(best) >= 11:
+        if len(best) >= 10:
             try:
-                eye_mid_y = (float(best[6]) + float(best[8])) / 2.0
-                eye_mid_x = (float(best[5]) + float(best[7])) / 2.0
-                nose_x    =  float(best[9])
+                eye_mid_x = (float(best[4]) + float(best[6])) / 2.0   # 右目x, 左目x
+                eye_mid_y = (float(best[5]) + float(best[7])) / 2.0   # 右目y, 左目y
+                nose_x    =  float(best[8])                           # 鼻x
             except Exception:
                 pass
-        elif len(best) >= 9:
+        elif len(best) >= 8:
             try:
-                eye_mid_y = (float(best[6]) + float(best[8])) / 2.0
-                eye_mid_x = (float(best[5]) + float(best[7])) / 2.0
+                eye_mid_x = (float(best[4]) + float(best[6])) / 2.0
+                eye_mid_y = (float(best[5]) + float(best[7])) / 2.0
             except Exception:
                 pass
         return (int(round(bx)), int(round(by)), int(round(bw)), int(round(bh))), eye_mid_y, eye_mid_x, nose_x
@@ -596,6 +711,64 @@ def detect_face_box(img, log):
         return None
 
 
+# 目をキャンバス上端から何割の位置に置くか。
+# 既存FMフェイスパック（180px版24枚）の実測中央値が 49.4% だったため 0.49。
+EYE_RATIO = 0.49
+
+# 髪の上端に最低限確保する余白（キャンバス高さに対する割合）。
+# 参考パックの頭頂余白は 0〜2% だったので 0.02。
+CROWN_MARGIN = 0.02
+
+
+def _silhouette_top_y(img, x_lo, x_hi):
+    """透過画像なら、指定した水平範囲にある被写体シルエットの最上端yを返す。
+    髪の実際の上端を知るために使う（顔ボックスは髪の量を含まないため）。
+    背景除去前の不透明な画像では判定できないので None を返す。"""
+    try:
+        import numpy as np
+        a = np.asarray(img.convert("RGBA"))[..., 3]
+        if int(a.min()) > 250:            # 透明部分が無い＝まだ背景除去前
+            return None
+        lo = max(0, int(x_lo))
+        hi = min(a.shape[1], int(x_hi) + 1)
+        if hi - lo < 8:
+            return None
+        rows = np.nonzero((a[:, lo:hi] > 40).any(axis=1))[0]
+        if rows.size == 0:
+            return None
+        return float(rows.min())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _silhouette_center_x(img, top, bottom, x_lo=None, x_hi=None):
+    """透過画像なら、指定した縦範囲にある被写体シルエットの水平中心を返す。
+    横向き・振り向きの顔では目の中点が頭のシルエット中心から大きくズレるため
+    （目基準だと頭が片側に寄って見切れる）、透過があるときはこちらを優先する。
+    x_lo/x_hi で探索範囲を顔の周辺に限定できる（上げた腕や別人を拾わないため）。
+    背景除去前の不透明な画像では判定できないので None を返す。"""
+    try:
+        import numpy as np
+        a = np.asarray(img.convert("RGBA"))[..., 3]
+        if int(a.min()) > 250:            # 透明部分が無い＝まだ背景除去前
+            return None
+        tt = max(0, int(top))
+        bb = min(a.shape[0], int(bottom))
+        if bb - tt < 8:
+            return None
+        cols = (a[tt:bb] > 40).any(axis=0)
+        lo = 0 if x_lo is None else max(0, int(x_lo))
+        hi = a.shape[1] if x_hi is None else min(a.shape[1], int(x_hi) + 1)
+        if hi - lo < 8:
+            return None
+        xs = np.nonzero(cols[lo:hi])[0]
+        if xs.size < 8:
+            return None
+        return float(lo + xs.min() + lo + xs.max()) / 2.0
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def crop_around_face(img, box, size_factor, neck, log=None,
                      eye_mid_y=None, eye_mid_x=None, nose_x=None):
     """顔の高さを基準に正方形クロップ。
@@ -621,7 +794,6 @@ def crop_around_face(img, box, size_factor, neck, log=None,
           and x + w * 0.15 <= nose_x <= x + w * 0.85):
         cx = nose_x
     chin = y + h
-    face_center = y + h / 2.0
     canvas_h = size_factor * h
 
     if False:  # (removed)
@@ -638,29 +810,63 @@ def crop_around_face(img, box, size_factor, neck, log=None,
             # → 顔高さ推定 = (顎 - 目) / 0.60
             face_h_norm = max((chin - eye_mid_y) / 0.60, h * 0.5)
             canvas_h = size_factor * face_h_norm
-            top = eye_mid_y - canvas_h * 0.40
+            top = eye_mid_y - canvas_h * EYE_RATIO
+            anchor_y, anchor_ratio = eye_mid_y, EYE_RATIO
             # 目ベースのクロップ: hair_guard を顔高さ基準にする（canvas_h基準だと eye 40% が崩れる）
             hair_guard = face_h_norm * 0.12
         elif eye_mid_y is not None and eye_mid_y > y + h * 0.70:
             # ランドマーク完全失敗（ひげ誤検出など: 目がボックス高さの70%超）
             # → 成人顔の標準比率で目を推定: 顔ボックス上端から高さの38%地点
             estimated_eye_y = y + h * 0.38
-            top = estimated_eye_y - canvas_h * 0.40
+            top = estimated_eye_y - canvas_h * EYE_RATIO
+            anchor_y, anchor_ratio = estimated_eye_y, EYE_RATIO
             hair_guard = canvas_h * 0.22
         else:
             # フォールバック: 顔ボックス上端（額レベル）を上から25%に配置
             # 目ランドマークより額位置のほうが検出が安定するため
             top = y - canvas_h * 0.25
+            anchor_y, anchor_ratio = float(y), 0.25
             hair_guard = canvas_h * 0.22
 
-        # ヘアガード（安全網）: 顔ボックス上端がキャンバス上端から最低 hair_guard の余白を持つよう保証
-        if y - top < hair_guard:
-            top = y - hair_guard
+        # 頭頂ガード: 透過があれば実際の髪の上端を見て、切れないだけキャンバスを広げる。
+        # 顔ボックス基準の hair_guard は髪の量を見ていないので、
+        # ボリュームのある髪型（マッシュ・アフロ等）では頭頂が水平に削れる。
+        #   条件: 髪の上端 - top >= canvas_h * CROWN_MARGIN
+        #   top = anchor_y - canvas_h * anchor_ratio なので
+        #   → canvas_h >= (anchor_y - 髪の上端) / (anchor_ratio - CROWN_MARGIN)
+        # キャンバスを広げる方向にだけ効かせる（目の位置比率は EYE_RATIO のまま崩さない）
+        _fcx = x + w / 2.0
+        sil_top = _silhouette_top_y(img, _fcx - w * 1.3, _fcx + w * 1.3)
+        # sil_top <= 1 は「元写真の時点で頭が上端で切れている」ケース。
+        # そこに余白を作ろうとすると際限なくキャンバスが膨らむので諦める。
+        if sil_top is not None and sil_top > 1 and anchor_ratio > CROWN_MARGIN + 0.05:
+            # 暴走防止に拡大は1.35倍まで（帽子・挙げた手などを拾った場合の保険）
+            need = min((anchor_y - sil_top) / (anchor_ratio - CROWN_MARGIN), canvas_h * 1.35)
+            if need > canvas_h:
+                if log is not None:
+                    log(t(f"  [i] 頭頂が切れるためキャンバスを拡大: {canvas_h:.0f} -> {need:.0f}px",
+                          f"  [i] Enlarging canvas to avoid cutting the crown: {canvas_h:.0f} -> {need:.0f}px"))
+                canvas_h = need
+            top = anchor_y - canvas_h * anchor_ratio
+        else:
+            # 透過が無い（背景除去前）場合の安全網: 顔ボックス上端に最低 hair_guard の余白
+            if y - top < hair_guard:
+                top = y - hair_guard
 
         bottom = top + canvas_h
 
     top = int(round(top))
     side = max(1, int(round(bottom - top)))
+    # 透過があるなら、頭のシルエット中心で左右を取り直す（見切れ防止）。
+    # 探索は顔ボックス中心 ±1.3×box幅 に限定（上げた腕や隣の人物を拾わないため）
+    _fcx = x + w / 2.0
+    sil_cx = _silhouette_center_x(img, top, min(bottom, chin),
+                                  x_lo=_fcx - w * 1.3, x_hi=_fcx + w * 1.3)
+    if sil_cx is not None:
+        if log is not None and abs(sil_cx - cx) > side * 0.02:
+            log(t(f"  [i] 水平中心をシルエット基準に補正: {cx:.0f} -> {sil_cx:.0f}",
+                  f"  [i] Horizontal center corrected to silhouette: {cx:.0f} -> {sil_cx:.0f}"))
+        cx = sil_cx
     left = int(round(cx - side / 2.0))
     canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
     canvas.paste(img, (-left, -top))
@@ -745,44 +951,146 @@ def classify(path, reader, log):
     from PIL import Image
     try:
         w, h = Image.open(path).size
-    except Exception:  # noqa: BLE001
-        return ("face", None)
+    except Exception as e:  # noqa: BLE001
+        # 壊れた画像を顔として扱うと、実在するIDのペア枠を食い潰してしまう
+        log(t(f"  [!] 画像を開けません（スキップ）: {Path(path).name}: {e}",
+              f"  [!] Cannot open image (skipped): {Path(path).name}: {e}"))
+        return ("skip", None)
     aspect = w / h if h else 1
     # 縦長〜正方形は顔写真とみなして OCR しない（大幅に高速化）
     if aspect < OCR_MIN_ASPECT:
         return ("face", None)
     text = read_text(path, reader)
-    m = ID_RE.search(text)
-    if m:
-        return ("id", m.group(1))
+    # 最初のマッチではなく候補の中で最長のものを採用する
+    # （OCRは画面上の全テキストを連結して返すので、年号や背番号が先に来ることがある）
+    cands = ID_RE.findall(text)
+    if cands:
+        return ("id", max(cands, key=len))
     # 横長で数字列があれば ID とみなす（保険）
-    digs = re.findall(r"\d{4,}", text)
+    digs = re.findall(r"\d{5,}", text)
     if digs:
         return ("id", max(digs, key=len))
     return ("face", None)
 
 
+# ペアと認める撮影時刻の最大差（秒）。これを超えたら「相方なし」として扱う。
+MAX_PAIR_GAP_SEC = 120.0
+
+
 def pair_by_time(faces, ids):
-    """各IDスクショに、撮影時刻が最も近い未使用の顔をペアにする。"""
-    pairs, used = [], set()
-    for idd in sorted(ids, key=lambda x: x["mtime"]):
-        best, best_diff = None, None
-        for f in faces:
-            if f["path"] in used:
+    """IDスクショと顔写真を撮影時刻でペアにする。
+    戻り値: (pairs, 相方の無い顔, 相方の無いID)
+
+    「各IDについて一番近い顔を取る」貪欲法だと、余分なIDスクショが1枚あるだけで
+    無関係な顔を先に掴み、それ以降のペアが芋づる式に1つずつズレて
+    他人の顔が別のIDで保存されてしまう。
+    そのため時刻順を保ったまま全体の時間差合計が最小になる組み合わせをDPで選ぶ。
+    どちらか一方を余らせるコストを MAX_PAIR_GAP_SEC/2 とすることで、
+    時間差が MAX_PAIR_GAP_SEC 以上離れたペアは自動的に「相方なし」になる。"""
+    fs = sorted(faces, key=lambda x: x["mtime"])
+    ds = sorted(ids, key=lambda x: x["mtime"])
+    n, mm = len(ds), len(fs)
+    skip = MAX_PAIR_GAP_SEC / 2.0
+    INF = float("inf")
+    # dp[i][j]: ID を i 件、顔を j 枚まで処理したときの最小コスト
+    dp = [[INF] * (mm + 1) for _ in range(n + 1)]
+    dp[0][0] = 0.0
+    for i in range(n + 1):
+        for j in range(mm + 1):
+            cur = dp[i][j]
+            if cur == INF:
                 continue
-            diff = abs(f["mtime"] - idd["mtime"])
-            if best_diff is None or diff < best_diff:
-                best, best_diff = f, diff
-        if best is not None:
-            used.add(best["path"])
-            pairs.append((best, idd))
-    leftover_faces = [f for f in faces if f["path"] not in used]
-    return pairs, leftover_faces
+            if i < n and cur + skip < dp[i + 1][j]:
+                dp[i + 1][j] = cur + skip
+            if j < mm and cur + skip < dp[i][j + 1]:
+                dp[i][j + 1] = cur + skip
+            if i < n and j < mm:
+                c = cur + abs(ds[i]["mtime"] - fs[j]["mtime"])
+                if c < dp[i + 1][j + 1]:
+                    dp[i + 1][j + 1] = c
+    # 経路復元
+    pairs, unpaired_ids, leftover_faces = [], [], []
+    i, j = n, mm
+    while i > 0 or j > 0:
+        cur = dp[i][j]
+        if i > 0 and j > 0 and abs(dp[i - 1][j - 1] + abs(ds[i - 1]["mtime"] - fs[j - 1]["mtime"]) - cur) < 1e-9:
+            pairs.append((fs[j - 1], ds[i - 1])); i -= 1; j -= 1
+        elif i > 0 and abs(dp[i - 1][j] + skip - cur) < 1e-9:
+            unpaired_ids.append(ds[i - 1]); i -= 1
+        else:
+            leftover_faces.append(fs[j - 1]); j -= 1
+    pairs.reverse(); unpaired_ids.reverse(); leftover_faces.reverse()
+    return pairs, leftover_faces, unpaired_ids
 
 
 # ==========================================================================
 # 一括処理（モード分岐）
 # ==========================================================================
+ID_MAP_FILENAME = "ids.csv"
+ID_EDITOR_MAX_ROWS = 400        # 一覧に並べる上限（多すぎるとウィンドウ生成が重い）
+
+
+def id_map_path(in_dir):
+    return Path(in_dir) / ID_MAP_FILENAME
+
+
+def read_id_map(in_dir):
+    """入力フォルダの ids.csv を {ファイル名: ID} で返す。無ければ空dict。
+    「ファイル名, ID」の2列。1行目がヘッダなら読み飛ばす。
+    Excelで開いて編集されることを想定して BOM 付きUTF-8も受ける。"""
+    path = id_map_path(in_dir)
+    if not path.exists():
+        return {}
+    mapping = {}
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as fp:
+            for i, row in enumerate(csv.reader(fp)):
+                if len(row) < 2:
+                    continue
+                name, uid = row[0].strip(), row[1].strip()
+                if not name or not uid:
+                    continue
+                if i == 0 and not uid.isdigit():
+                    continue                      # ヘッダ行
+                mapping[name] = uid
+    except Exception:  # noqa: BLE001
+        return {}
+    return mapping
+
+
+def write_id_map(in_dir, mapping):
+    """{ファイル名: ID} を ids.csv に保存する。IDが空の行は書かない。"""
+    path = id_map_path(in_dir)
+    with path.open("w", encoding="utf-8-sig", newline="") as fp:
+        w = csv.writer(fp)
+        w.writerow(["filename", "id"])
+        for name, uid in mapping.items():
+            uid = str(uid).strip()
+            if uid:
+                w.writerow([name, uid])
+    return path
+
+
+def out_filename(uid, opts):
+    """出力PNGのファイル名。newgen 指定なら "r-" を付ける。
+    config.xml の from= はファイル名と一致していなければならないため、
+    プレフィックスはファイル名と from= の両方に付ける（to= のパスは数値IDのまま）。"""
+    prefix = "r-" if opts.get("newgen", False) else ""
+    return f"{prefix}{uid}.png"
+
+
+def _portrait_score(path):
+    """顔写真らしさのスコア。縦長〜正方形を優先し、同程度なら面積が大きい方を選ぶ。
+    FMのIDスクショは横長かつ大面積なので、面積だけで選ぶとスクショが勝ってしまう。"""
+    from PIL import Image
+    try:
+        w, h = Image.open(path).size
+    except Exception:  # noqa: BLE001
+        return (0, 0)
+    aspect = (w / h) if h else 99.0
+    return (0 if aspect >= OCR_MIN_ASPECT else 1, w * h)
+
+
 def _img_area(path):
     from PIL import Image
     try:
@@ -833,37 +1141,152 @@ def send_to_trash(path):
 
 
 
+# config.xml のレコード解析
+RECORD_RE = re.compile(r'<record\s+[^>]*?/>')
+RECORD_FROM_RE = re.compile(r'from=["\']([^"\']*)["\']')
+RECORD_TO_RE = re.compile(r'to=["\'][^"\']*?/person/([^/"\']+)/portrait["\']')
+
+
+def _strip_id_prefix(v):
+    for pre in ("face_", "r-"):
+        if v.startswith(pre):
+            return v[len(pre):]
+    return v
+
+
+def _record_key(rec):
+    """レコードが指している person ID を返す。
+    重複は名前ではなく指し先で判定する。既製パックの from="face_12345" と
+    自前の from="12345" は名前が違うだけで同じ選手を指しているため。"""
+    mt = RECORD_TO_RE.search(rec)
+    if mt:
+        return _strip_id_prefix(mt.group(1))
+    mf = RECORD_FROM_RE.search(rec)
+    return _strip_id_prefix(mf.group(1)) if mf else None
+
+
+def _read_config_text(cfg_path):
+    """config.xml をエンコーディングを推定して読む。
+    errors="replace" で読むと UTF-16 / Shift-JIS の既存ファイルが文字化けし、
+    そのまま UTF-8 で書き戻して内容を破壊してしまうため。"""
+    raw = cfg_path.read_bytes()
+    for enc in ("utf-8-sig", "utf-16", "utf-8"):
+        try:
+            if enc == "utf-16" and not raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+                continue
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    raise ValueError(t("config.xml の文字コードを判別できません（UTF-8 で保存し直してください）",
+                       "Cannot determine the encoding of config.xml (please re-save it as UTF-8)"))
+
+
+def _timestamped_backup(path):
+    """既存ファイルを上書き前に退避し、作成したバックアップのPathを返す。"""
+    path = Path(path)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    bak = path.with_name(f"{path.name}.{stamp}.bak")
+    serial = 2
+    while bak.exists():
+        bak = path.with_name(f"{path.name}.{stamp}_{serial}.bak")
+        serial += 1
+    shutil.copy2(path, bak)
+    return bak
+
+
+def _atomic_write_text(path, content, encoding="utf-8"):
+    """同じフォルダの一時ファイルへ書いてから置換し、途中終了での破損を防ぐ。"""
+    path = Path(path)
+    tmp = path.with_name(
+        f".{path.name}.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.tmp")
+    try:
+        with tmp.open("w", encoding=encoding, newline="") as fp:
+            fp.write(content)
+            fp.flush()
+            os.fsync(fp.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _legacy_removebg_secret_items(settings):
+    """旧版の設定にあるremove.bg認証項目だけを、値を表示せず抽出する。"""
+    if not isinstance(settings, dict):
+        return {}
+    kept = {}
+    for key, value in settings.items():
+        normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        if normalized.startswith("removebg") and (
+                "key" in normalized or "token" in normalized):
+            kept[key] = value
+    return kept
+
+
+def _atomic_save_png(img, path):
+    """PNGを一時ファイルへ完成させてから置換する。"""
+    path = Path(path)
+    tmp = path.with_name(
+        f".{path.name}.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.tmp")
+    try:
+        img.save(tmp, "PNG")
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def write_config(uids, cfg_path, append=True, newgen=False):
     """config.xml に uid のレコードを書き込む（追記 or 上書き）。
     実際のFMリソースマネージャが認識する fmXML 互換形式
     （<record><list id="maps">...</list></record>、
     to="graphics/pictures/person/{id}/portrait"）で書き出す。
-    戻り値: (追加件数, 合計件数)"""
-    existing = []
-    if append and cfg_path.exists():
-        text = cfg_path.read_text(encoding="utf-8", errors="replace")
-        for line in text.splitlines():
-            m = re.search(r'from=["\'](\d+)["\']', line)
-            if m:
-                existing.append(m.group(1))
-    existing_set = set(existing)
-    new_uids = [u for u in uids if u not in existing_set]
+    戻り値: (追加件数, 合計件数, バックアップPathまたはNone)"""
     prefix = "r-" if newgen else ""
+    existing = []
+    text = ""
+    if append and cfg_path.exists():
+        text = _read_config_text(cfg_path)
+        # from= の値は "12345" とは限らない（既製パックは "face_12345"、newgenは "r-12345"）。
+        # 数字だけを要求すると重複を検出できず、同じIDが二重に入る。
+        for rec in RECORD_RE.findall(text):
+            k = _record_key(rec)
+            if k is not None:
+                existing.append(k)
+    existing_set = set(existing)
+    new_uids = []
+    for u in uids:
+        if str(u) in existing_set:
+            continue
+        new_uids.append(u)
     lines_to_add = [
-        f'\t\t<record from="{u}" to="graphics/pictures/person/{prefix}{u}/portrait"/>\n'
+        "\t\t<record from=%s to=%s/>\n" % (
+            quoteattr(f"{prefix}{u}"),
+            quoteattr(f"graphics/pictures/person/{u}/portrait"))
         for u in new_uids
     ]
-    if append and cfg_path.exists():
-        text = cfg_path.read_text(encoding="utf-8", errors="replace")
+    # 追記できるのは <list id="maps"> を持つ正しい形の既存ファイルだけ。
+    # 空ファイルや壊れたファイルに追記すると、ルート要素の無い不正なXMLが出来上がり、
+    # FMがパック全体を読まなくなる（しかも以降ずっとそこに追記し続ける）。
+    close = -1
+    if append and cfg_path.exists() and text.strip():
         close = text.rfind("</list>")
         if close == -1:
             close = text.rfind("</graphics>")  # 旧形式の config.xml からの移行用フォールバック
-        if close != -1:
-            new_text = text[:close] + "".join(lines_to_add) + text[close:]
-        else:
-            new_text = text.rstrip() + "\n" + "".join(lines_to_add)
-        cfg_path.write_text(new_text, encoding="utf-8")
+    backup = None
+    if close != -1:
+        new_text = text[:close] + "".join(lines_to_add) + text[close:]
+        if new_text != text:
+            _atomic_write_text(cfg_path, new_text)
     else:
+        # 明示的な上書き、または壊れた既存ファイルの再生成では、元を必ず退避する。
+        if cfg_path.exists() and cfg_path.stat().st_size > 0:
+            backup = _timestamped_backup(cfg_path)
+        existing = []
         header = (
             '<record>\n'
             '\t<!-- resource manager options -->\n\n'
@@ -881,64 +1304,93 @@ def write_config(uids, cfg_path, append=True, newgen=False):
             '\t\t<!-- Auto generated by fmXML -->\n'
         )
         footer = '\t</list>\n</record>\n'
-        cfg_path.write_text(header + "".join(lines_to_add) + footer, encoding="utf-8")
+        _atomic_write_text(cfg_path, header + "".join(lines_to_add) + footer)
     total = len(existing) + len(new_uids) if append else len(new_uids)
-    return len(new_uids), total
+    return len(new_uids), total, backup
 
 
 def dedupe_config(cfg_path):
     """config.xml の重複 from 属性を除去して上書き保存。
-    バックアップを .bak に作成する。
-    戻り値: (出力パス, 除去件数, 残り件数)"""
-    text = cfg_path.read_text(encoding="utf-8", errors="replace")
+    タイムスタンプ付きバックアップを作成する。
+    戻り値: (出力パス, バックアップPath, 除去件数, 残り件数)"""
+    text = _read_config_text(cfg_path)
     seen = set()
-    out_lines = []
-    removed = 0
-    for line in text.splitlines(keepends=True):
-        m = re.search(r'from=["\'](\d+)["\']', line)
-        if m:
-            uid = m.group(1)
-            if uid in seen:
-                removed += 1
-                continue
-            seen.add(uid)
-        out_lines.append(line)
-    bak = cfg_path.with_name(cfg_path.name + ".bak")
-    shutil.copy2(cfg_path, bak)
-    cfg_path.write_text("".join(out_lines), encoding="utf-8")
-    return cfg_path, removed, len(seen)
+    removed = [0]
+
+    # 行単位で消すと「1行に複数レコード」のファイルで重複していないレコードまで巻き添えになる。
+    # <record .../> 単位で判定する。
+    def _sub(m):
+        key = _record_key(m.group(0))
+        if key is None:
+            return m.group(0)
+        if key in seen:
+            removed[0] += 1
+            return ""
+        seen.add(key)
+        return m.group(0)
+
+    out = RECORD_RE.sub(_sub, text)
+    if removed[0] == 0:
+        return cfg_path, None, 0, len(seen)
+    # 既存の .bak を上書きすると、2回目の実行で元の状態が失われる
+    bak = _timestamped_backup(cfg_path)
+    _atomic_write_text(cfg_path, out)
+    return cfg_path, bak, removed[0], len(seen)
 
 
 def process_one(path, out_path, opts, log):
     """1枚の顔写真を実際に加工する処理本体。
-    顔トリミング -> アップスケール -> 背景除去 -> 指定サイズへリサイズ -> PNG保存。
+    顔検出 -> 背景除去 -> 顔トリミング -> アップスケール -> 指定サイズへリサイズ -> PNG保存。
+
+    背景除去をトリミングより前に置いているのは、トリミングの水平中心を
+    「頭のシルエット中心」で決めるため。目の中点だけを基準にすると、
+    振り向いた顔で頭が片側に寄って見切れる。
+    顔検出だけは背景除去『前』の元画像に対して行う（透明部が黒く写ると検出精度が落ちるため）。
+    背景除去は画像サイズを変えないので、検出したボックス座標はそのまま使える。
+
     保存できたら True、プレビューでスキップ/キャンセルされたり失敗した場合は False を返す。"""
-    from PIL import Image
-    img = Image.open(path).convert("RGBA")
+    from PIL import Image, ImageOps
+    # スマホ/一眼のJPEGはEXIFに回転情報を持つ。適用しないと横倒しのまま処理され、
+    # 顔検出も失敗して写真全体が90度傾いたまま出力される。
+    img = ImageOps.exif_transpose(Image.open(path)).convert("RGBA")
     debug = opts.get("debug")
+    # 判定はクロップ『前』に行う。crop_around_face は画像外にはみ出した分を
+    # 透明でパディングするため、クロップ後だと普通の写真も透過済みに見えてしまう。
+    already_cutout = is_already_cutout(img)
 
-    if opts.get("face_crop", True):
-        det = detect_face_box(img, log)
-        if det is not None:
-            box, eye_mid_y, eye_mid_x, nose_x = det
-            if debug:
-                log(t(f"  [debug] 顔box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x}",
-                      f"  [debug] face box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x}"))
-            img = crop_around_face(img, box, opts.get("face_size", 2.20), opts.get("face_neck", 0.10),
-                                    log=log, eye_mid_y=eye_mid_y, eye_mid_x=eye_mid_x, nose_x=nose_x)
-        elif debug:
-            log(t("  [debug] 顔を検出できませんでした（全体を使用）",
-                  "  [debug] face not detected (using full image)"))
+    # --- 1. 顔検出（元画像に対して。背景除去してからでは精度が落ちる）---
+    det = detect_face_box(img, log) if opts.get("face_crop", True) else None
+    if det is not None:
+        box, eye_mid_y, eye_mid_x, nose_x = det
+        if debug:
+            log(t(f"  [debug] 顔box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x}",
+                  f"  [debug] face box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x}"))
+    elif debug and opts.get("face_crop", True):
+        log(t("  [debug] 顔を検出できませんでした（全体を使用）",
+              "  [debug] face not detected (using full image)"))
 
+    # --- 2. 背景除去（サイズは変わらない）---
+    if opts.get("bg_removal", True):
+        if already_cutout:
+            # 既に背景が抜かれている画像を再処理すると、透明部＝黒として扱われ
+            # 黒髪などが背景と誤認されて欠ける。そのまま通す。
+            log(t("  [i] 入力が既に背景除去済みのため、背景除去をスキップします",
+                  "  [i] Input is already cut out; skipping background removal."))
+        else:
+            img = remove_background(img, opts.get("rembg_model", "isnet-general-use"),
+                                    alpha_matting=opts.get("alpha_matting", False), log=log,
+                                    removebg_key=opts.get("removebg_key"))
+
+    # --- 3. 顔トリミング（ここで透過が使えるのでシルエット基準の水平補正が効く）---
+    if det is not None:
+        img = crop_around_face(img, box, opts.get("face_size", 1.37), opts.get("face_neck", 0.10),
+                               log=log, eye_mid_y=eye_mid_y, eye_mid_x=eye_mid_x, nose_x=nose_x)
+
+    # --- 4. アップスケール（切り抜き後なので小さく済む）---
     if opts.get("upscale", True):
         img = upscale(img, float(opts.get("scale", 1.0)),
                       opts.get("esrgan_model", "RealESRGAN_x4plus"),
                       opts.get("ai_upscale", False), log)
-
-    if opts.get("bg_removal", True):
-        img = remove_background(img, opts.get("rembg_model", "isnet-general-use"),
-                                alpha_matting=opts.get("alpha_matting", False), log=log,
-                                removebg_key=opts.get("removebg_key"))
 
     img = fit_to_size(img, int(opts.get("size", 180)), opts.get("fit", "contain"))
 
@@ -953,7 +1405,7 @@ def process_one(path, out_path, opts, log):
         if decision == "skip":
             return False
 
-    img.save(out_path, "PNG")
+    _atomic_save_png(img, out_path)
     return True
 
 
@@ -961,15 +1413,61 @@ def process_folder(opts, log, progress=None):
     in_dir = Path(opts["input"]); out_dir = Path(opts["output"])
     if not in_dir.is_dir():
         log(t(f"[!] 入力フォルダがありません: {in_dir}", f"[!] Input folder not found: {in_dir}")); return
+    try:
+        if in_dir.resolve() == out_dir.resolve():
+            log(t("[!] 入力フォルダと出力フォルダは別にしてください。元画像の上書きを防ぐため処理を中止しました。",
+                  "[!] Input and output folders must differ. Processing was stopped to protect source images."))
+            return
+    except Exception:  # noqa: BLE001
+        pass
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    subdirs = sorted(d for d in in_dir.iterdir() if d.is_dir())
+    # 出力先が入力フォルダの中にあると、自分が出したPNGを「ペアフォルダ」として
+    # 読み込んでしまい、2回目以降の実行で別人の顔が上書きされる
+    try:
+        out_res = out_dir.resolve()
+    except Exception:  # noqa: BLE001
+        out_res = out_dir
+    subdirs = []
+    for d in sorted(in_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        try:
+            if d.resolve() == out_res:
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        subdirs.append(d)
+
+    files = sorted(f for f in in_dir.iterdir() if f.suffix.lower() in SUPPORTED_EXT)
+
+    # 対応表（ids.csv）があれば最優先。ペアフォルダもIDスクショもOCRも不要。
+    id_map = read_id_map(in_dir)
+    if id_map:
+        targets = [f for f in files if f.name in id_map]
+        missing = [f for f in files if f.name not in id_map]
+        log(t(f"対応表モード（{ID_MAP_FILENAME}）: {len(targets)} 件",
+              f"ID map mode ({ID_MAP_FILENAME}): {len(targets)} file(s)"))
+        if missing:
+            log(t(f"  [!] 対応表にIDが無い画像 {len(missing)} 枚はスキップします: ",
+                  f"  [!] {len(missing)} image(s) missing from the ID map are skipped: ")
+                + ", ".join(f.name for f in missing[:10]) + (" …" if len(missing) > 10 else ""))
+        if not targets:
+            log(t(f"[!] {ID_MAP_FILENAME} に載っている画像が1枚もありません。",
+                  f"[!] None of the images are listed in {ID_MAP_FILENAME}.")); return
+        _run_idmap_mode(targets, id_map, out_dir, opts, log, progress)
+        return
+
     if subdirs:
         log(t(f"サブフォルダ（ペア）モード: {len(subdirs)} フォルダ", f"Subfolder (pair) mode: {len(subdirs)} folders"))
+        if files:
+            # 以前はここが無言だったので、紛れ込んだフォルダ1つで全画像が無視されても気づけなかった
+            log(t(f"  [!] 直下の画像 {len(files)} 枚はサブフォルダモードでは無視されます: ",
+                  f"  [!] {len(files)} loose image(s) are ignored in subfolder mode: ")
+                + ", ".join(f.name for f in files[:10]) + (" …" if len(files) > 10 else ""))
         _run_subfolder_mode(subdirs, out_dir, opts, log, progress)
         return
 
-    files = sorted(f for f in in_dir.iterdir() if f.suffix.lower() in SUPPORTED_EXT)
     if not files:
         log(t(f"[!] 対応画像が見つかりません: {in_dir}", f"[!] No supported images found: {in_dir}")); return
     if opts["ocr_id"]:
@@ -1002,10 +1500,15 @@ def _run_subfolder_mode(subdirs, out_dir, opts, log, progress):
         elif reader is not None:
             for f in imgs:
                 kind, num = classify(f, reader, log)
-                if kind == "id" and num and id_num is None:
-                    id_num = num
-                else:
-                    faces.append(f)
+                if kind == "skip":
+                    continue
+                if kind == "id":
+                    # 2枚目以降のIDスクショも顔候補には入れない
+                    # （FMのスクショは顔写真より大きいので max(_img_area) に勝ってしまう）
+                    if num and id_num is None:
+                        id_num = num
+                    continue
+                faces.append(f)
         else:
             faces = imgs
         if id_num is None and sub.name.isdigit():
@@ -1015,7 +1518,9 @@ def _run_subfolder_mode(subdirs, out_dir, opts, log, progress):
             log(t(f"  [!] {sub.name}: IDを読み取れず、スキップ", f"  [!] {sub.name}: could not read ID, skipped")); continue
         if not faces:
             log(t(f"  [!] {sub.name}: 顔写真が見つからず、スキップ", f"  [!] {sub.name}: no face image found, skipped")); continue
-        face = max(faces, key=_img_area)  # 一番大きい画像を顔とみなす
+        # 「一番大きい画像＝顔」はFMのスクショ(1920x1080)が顔写真より大きいので危険。
+        # ポートレートらしさ（縦長ほど高スコア）を主、面積を従にして選ぶ。
+        face = max(faces, key=_portrait_score)
         log(t(f"  [{sub.name}] 顔: {face.name}  =>  {id_num}.png", f"  [{sub.name}] face: {face.name}  =>  {id_num}.png"))
         pairs.append((face, id_num, sub.name))
 
@@ -1038,15 +1543,16 @@ def _run_subfolder_mode(subdirs, out_dir, opts, log, progress):
                 log(t(f"[skip] ID重複: {uid}（{subname}）", f"[skip] duplicate ID: {uid} ({subname})"))
                 return
             seen.add(uid)
-        out_path = out_dir / f"{uid}.png"
+        out_name = out_filename(uid, opts)
+        out_path = out_dir / out_name
         if out_path.exists() and not opts["overwrite"]:
-            log(t(f"[{idx}/{total}] [skip] 既存: {uid}.png", f"[{idx}/{total}] [skip] exists: {uid}.png"))
+            log(t(f"[{idx}/{total}] [skip] 既存: {out_name}", f"[{idx}/{total}] [skip] exists: {out_name}"))
             with uids_lock: uids.append(uid)
             with done_lock:
                 done[0] += 1
                 if progress: progress(done[0], total)
             return
-        log(f"[{idx}/{total}] {subname}/{face.name} -> {uid}.png")
+        log(f"[{idx}/{total}] {subname}/{face.name} -> {out_name}")
         if opts.get("_status"): opts["_status"](face.name)
         t0 = time.monotonic()
         try:
@@ -1075,33 +1581,53 @@ def _run_subfolder_mode(subdirs, out_dir, opts, log, progress):
     _finish(uids, out_dir, opts, log)
 
 
+def _run_idmap_mode(files, id_map, out_dir, opts, log, progress):
+    """ids.csv の「ファイル名 -> ID」に従って処理する。ペアリングもOCRも行わない。"""
+    _run_uid_list(files, [id_map[f.name] for f in files], out_dir, opts, log, progress)
+
+
 def _run_filename_mode(files, out_dir, opts, log, progress):
+    """ファイル名（拡張子を除く）をそのままIDとして使う。"""
+    _run_uid_list(files, [f.stem for f in files], out_dir, opts, log, progress,
+                  require_digits=True)
+
+
+def _run_uid_list(files, uid_list, out_dir, opts, log, progress, require_digits=True):
+    """「画像 -> UID」が確定しているリストをまとめて処理する共通ルーチン。
+    ファイル名モードと対応表モードで中身が同じだったため1本にまとめてある。"""
     cancel = opts.get("_cancel")
     workers = max(1, int(opts.get("workers", 1)))
-    total = len(files)
+    items = list(zip(files, uid_list))
+    total = len(items)
     uids, uids_lock = [], threading.Lock()
     seen, seen_lock = set(), threading.Lock()
     done, done_lock = [0], threading.Lock()
 
-    def _process(idx_f):
-        idx, f = idx_f
+    def _process(idx_item):
+        idx, (f, uid) = idx_item
         if cancel and cancel.is_set():
             return
-        uid = f.stem
+        uid = str(uid).strip()
+        if require_digits and not uid.isdigit():
+            # 数字以外は config.xml に書いてもFMが参照しないパスになる
+            log(t(f"[skip] IDが数字ではありません（FMのperson IDとして使えません）: {f.name} -> {uid!r}",
+                  f"[skip] ID is not numeric (not a valid FM person ID): {f.name} -> {uid!r}"))
+            return
         with seen_lock:
             if uid in seen:
-                log(t(f"[skip] UID重複: {uid}", f"[skip] duplicate UID: {uid}"))
+                log(t(f"[skip] ID重複: {uid}（{f.name}）", f"[skip] duplicate ID: {uid} ({f.name})"))
                 return
             seen.add(uid)
-        out_path = out_dir / f"{uid}.png"
+        out_name = out_filename(uid, opts)
+        out_path = out_dir / out_name
         if out_path.exists() and not opts["overwrite"]:
-            log(t(f"[{idx}/{total}] [skip] 既存: {uid}.png", f"[{idx}/{total}] [skip] exists: {uid}.png"))
+            log(t(f"[{idx}/{total}] [skip] 既存: {out_name}", f"[{idx}/{total}] [skip] exists: {out_name}"))
             with uids_lock: uids.append(uid)
             with done_lock:
                 done[0] += 1
                 if progress: progress(done[0], total)
             return
-        log(f"[{idx}/{total}] {f.name} -> {uid}.png")
+        log(f"[{idx}/{total}] {f.name} -> {out_name}")
         if opts.get("_status"): opts["_status"](f.name)
         t0 = time.monotonic()
         try:
@@ -1120,9 +1646,9 @@ def _run_filename_mode(files, out_dir, opts, log, progress):
     use_parallel = workers > 1 and not opts.get("_preview")
     if use_parallel:
         with ThreadPoolExecutor(max_workers=workers) as exe:
-            list(exe.map(_process, enumerate(files, 1)))
+            list(exe.map(_process, enumerate(items, 1)))
     else:
-        for item in enumerate(files, 1):
+        for item in enumerate(items, 1):
             if cancel and cancel.is_set(): break
             _process(item)
     if progress:
@@ -1136,6 +1662,8 @@ def _run_ocr_mode(files, out_dir, opts, log, progress):
     faces, ids = [], []
     for i, f in enumerate(files, 1):
         kind, number = classify(f, reader, log)
+        if kind == "skip":
+            continue
         mtime = f.stat().st_mtime
         if kind == "id":
             log(f"  [ID ] {f.name}  ->  ID: {number}")
@@ -1151,7 +1679,7 @@ def _run_ocr_mode(files, out_dir, opts, log, progress):
         log(t("[!] 顔写真が1枚も見つかりませんでした。", "[!] No face images found."))
         return
 
-    pairs, leftover = pair_by_time(faces, ids)
+    pairs, leftover, unpaired_ids = pair_by_time(faces, ids)
     log(t(f"\nペアリング結果: {len(pairs)} 組", f"\nPairing result: {len(pairs)} pair(s)"))
     for face, idd in pairs:
         log(t(f"  顔: {face['path'].name}  <->  ID: {idd['path'].name}  =>  {idd['number']}.png", f"  face: {face['path'].name}  <->  ID: {idd['path'].name}  =>  {idd['number']}.png"))
@@ -1159,6 +1687,13 @@ def _run_ocr_mode(files, out_dir, opts, log, progress):
         log(t(f"  [!] 相方の見つからない顔 {len(leftover)} 枚: ",
               f"  [!] {len(leftover)} face(s) with no matching ID: ")
             + ", ".join(x["path"].name for x in leftover))
+    if unpaired_ids:
+        # 以前はここが黙って捨てられていて、出力されない選手に気づけなかった
+        log(t(f"  [!] 相方の見つからないID {len(unpaired_ids)} 件（撮影時刻が"
+              f"{int(MAX_PAIR_GAP_SEC)}秒以上離れています）: ",
+              f"  [!] {len(unpaired_ids)} ID(s) with no matching face "
+              f"(more than {int(MAX_PAIR_GAP_SEC)}s apart): ")
+            + ", ".join(f"{x['number']}({x['path'].name})" for x in unpaired_ids))
     log(t("  ※ 取り違えが無いか、上の対応を一度確認してください。\n", "  * Please double-check the pairings above for mismatches.\n"))
 
     cancel = opts.get("_cancel")
@@ -1178,15 +1713,16 @@ def _run_ocr_mode(files, out_dir, opts, log, progress):
                 log(t(f"[skip] ID重複: {uid}（{face['path'].name}）", f"[skip] duplicate ID: {uid} ({face['path'].name})"))
                 return
             seen.add(uid)
-        out_path = out_dir / f"{uid}.png"
+        out_name = out_filename(uid, opts)
+        out_path = out_dir / out_name
         if out_path.exists() and not opts["overwrite"]:
-            log(t(f"[{idx}/{total}] [skip] 既存: {uid}.png", f"[{idx}/{total}] [skip] exists: {uid}.png"))
+            log(t(f"[{idx}/{total}] [skip] 既存: {out_name}", f"[{idx}/{total}] [skip] exists: {out_name}"))
             with uids_lock: uids.append(uid)
             with done_lock:
                 done[0] += 1
                 if progress: progress(done[0], total)
             return
-        log(f"[{idx}/{total}] {face['path'].name} -> {uid}.png")
+        log(f"[{idx}/{total}] {face['path'].name} -> {out_name}")
         if opts.get("_status"): opts["_status"](face["path"].name)
         t0 = time.monotonic()
         try:
@@ -1219,8 +1755,8 @@ def _finish(uids, out_dir, opts, log):
     log(t(f"\n完了: {len(uids)} 件を出力 -> {out_dir}", f"\nDone: exported {len(uids)} file(s) -> {out_dir}"))
     if opts["make_config"] and uids:
         cfg = out_dir / "config.xml"
-        added, total = write_config(uids, cfg, opts.get("config_append", True),
-                                    opts.get("newgen", False))
+        added, total, backup = write_config(uids, cfg, opts.get("config_append", True),
+                                            opts.get("newgen", False))
         tag = t("（newgen: r- 付き）", " (newgen: r- prefix)") if opts.get("newgen", False) else ""
         if opts.get("config_append", True):
             log(t(f"config.xml を更新{tag}: 新規 {added} 件 / 合計 {total} 行 -> {cfg}",
@@ -1228,6 +1764,9 @@ def _finish(uids, out_dir, opts, log):
         else:
             log(t(f"config.xml を生成{tag}: {total} 行 -> {cfg}",
                   f"Generated config.xml{tag}: {total} lines -> {cfg}"))
+        if backup is not None:
+            log(t(f"既存の config.xml をバックアップしました: {backup.name}",
+                  f"Backed up the previous config.xml: {backup.name}"))
     # ログファイルを保存
     lines = opts.get("_log_lines")
     if lines is not None:
@@ -1271,13 +1810,15 @@ def set_titlebar_dark(window, dark=True):
 # ==========================================================================
 # GUI
 # ==========================================================================
-# 顔の大きさプリセット（言語非依存の内部キー＋表示ラベル）
-ZOOM_SIZE = [2.20, 1.65]  # 標準/FM標準
-ZOOM_NECK = [0.10, 0.05]  # 参考値（現バージョンでは直接使用しない）
-ZOOM_LABELS = {
-    "ja": ["標準", "FM標準"],
-    "en": ["Normal", "FM Standard"],
-}
+# 顔の大きさ
+# キャンバス高さ = 顔高さ(目〜顎から正規化) × この値。小さいほど顔が大きく写る。
+# 既定値は既存FMフェイスパック（180px版24枚）の実測中央値。実測レンジは 1.18〜1.57。
+# 髪の量が多くて枠に収まらない場合は crop_around_face が自動で広げる。
+DEFAULT_FACE_SIZE = 1.37
+FACE_SIZE_MIN, FACE_SIZE_MAX = 0.8, 3.0
+FACE_NECK = 0.10               # 参考値（現バージョンでは直接使用しない）
+# 旧バージョンの設定ファイル（プリセット番号）からの移行用
+LEGACY_ZOOM_TO_SIZE = {0: 1.37, 1: 1.25}
 
 
 class App(tk.Tk):
@@ -1291,10 +1832,19 @@ class App(tk.Tk):
         self.q = queue.Queue()
         self.mode = "dark"
         self.lang = "ja"
-        self.zoom_idx = 1            # 既定: FM標準
         self.last_out = None
         self.log_lines = []          # ログ本文を保持（言語切替時に再描画はしないが保持用）
         self.log_has_content = False # 実処理のログが出たらTrue（案内文だけならFalse）
+        # tkdnd は TkinterDnD.Tk() を使わなくても、既存のTkルートに後から載せられる。
+        # （クラス構成を変えずに済むので、未導入環境との差分が小さい）
+        self.dnd_ok = False
+        self.dnd_version = None
+        if HAS_DND:
+            try:
+                self.dnd_version = TkinterDnD._require(self)
+                self.dnd_ok = True
+            except Exception:  # noqa: BLE001
+                self.dnd_ok = False
         self.style = ttk.Style()
         self._init_vars()
         self._preload_settings()     # 言語・テーマ・各値をウィジェット生成前に読み込む
@@ -1303,7 +1853,7 @@ class App(tk.Tk):
         self._build()
         self.apply_theme(self.mode)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.after(100, self._poll)
+        self._poll_id = self.after(100, self._poll)
 
     # ---------- tk変数（1度だけ作る。再ビルドでも値が残る）----------
     def _init_vars(self):
@@ -1330,13 +1880,24 @@ class App(tk.Tk):
         self.use_removebg_var = tk.BooleanVar(value=False)
         self.ow_var = tk.BooleanVar(value=False)
         self.debug_var = tk.BooleanVar(value=False)
+        self.face_size_var = tk.DoubleVar(value=DEFAULT_FACE_SIZE)
 
     # ---------- 設定の保存・復元 ----------
+    def _get_num(self, var, default):
+        """IntVar/DoubleVar は入力欄が空だと TclError を投げる。
+        1つ壊れただけで設定ファイル全体が保存されなくなるのを防ぐ。"""
+        try:
+            return var.get()
+        except Exception:  # noqa: BLE001
+            return default
+
     def _collect_settings(self):
         return {
-            "mode": self.mode, "lang": self.lang, "zoom_idx": self.zoom_idx,
+            "mode": self.mode, "lang": self.lang,
+            "face_size": self._get_num(self.face_size_var, DEFAULT_FACE_SIZE),
             "input": self.in_var.get(), "output": self.out_var.get(),
-            "size": self.size_var.get(), "scale": self.scale_var.get(),
+            "size": self._get_num(self.size_var, 180),
+            "scale": self._get_num(self.scale_var, 1.0),
             "fit": self.fit_var.get(), "model": self.model_var.get(),
             "matting": self.matting_var.get(), "ocr": self.ocr_var.get(),
             "facecrop": self.facecrop_var.get(), "upscale": self.upscale_var.get(),
@@ -1344,9 +1905,9 @@ class App(tk.Tk):
             "append": self.append_var.get(), "newgen": self.newgen_var.get(),
             "preview": self.preview_var.get(),
             "lowpower": self.lowpower_var.get(),
-            "workers": self.workers_var.get(),
+            "workers": self._get_num(self.workers_var, 1),
             "save_log": self.save_log_var.get(),
-            "removebg_key": self.removebg_var.get().strip(),
+            # APIキーは機密情報なので設定ファイルへ保存しない。
             "use_removebg": self.use_removebg_var.get(),
             "overwrite": self.ow_var.get(),
             "debug": self.debug_var.get(),
@@ -1359,9 +1920,20 @@ class App(tk.Tk):
             d = json.loads(self.SETTINGS_PATH.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             return
-        self.mode = d.get("mode", self.mode)
-        self.lang = d.get("lang", self.lang)
-        self.zoom_idx = min(int(d.get("zoom_idx", self.zoom_idx)), len(ZOOM_SIZE) - 1)
+        # 設定ファイルは手で編集されたり、書き込み中のクラッシュで壊れたりする。
+        # 値をそのまま信用すると、ウィンドウが出る前に落ちて起動不能になる。
+        if not isinstance(d, dict):
+            return
+        if d.get("mode") in ("dark", "light"):
+            self.mode = d["mode"]
+        if d.get("lang") in ("ja", "en"):
+            self.lang = d["lang"]
+        # 旧形式（プリセット番号）からの移行
+        if "face_size" not in d and "zoom_idx" in d:
+            try:
+                d["face_size"] = LEGACY_ZOOM_TO_SIZE.get(int(d["zoom_idx"]), DEFAULT_FACE_SIZE)
+            except (TypeError, ValueError):
+                pass
 
         for key, var in (
             ("input",       self.in_var),
@@ -1369,8 +1941,8 @@ class App(tk.Tk):
             ("fit",         self.fit_var),
             ("model",       self.model_var),
             ("size",        self.size_var),
+            ("face_size",   self.face_size_var),
             ("scale",       self.scale_var),
-            ("removebg_key", self.removebg_var),
             ("use_removebg", self.use_removebg_var),
             ("matting",     self.matting_var),
             ("ocr",         self.ocr_var),
@@ -1395,8 +1967,20 @@ class App(tk.Tk):
 
     def _save_settings(self):
         try:
-            self.SETTINGS_PATH.write_text(
-                json.dumps(self._collect_settings(), ensure_ascii=False, indent=2),
+            # 新しく入力したAPIキーは保存しない。ただし旧版が既に保存したキーは、
+            # 設定保存の副作用で勝手に削除しない（配布物にも読み込まない）。
+            previous = {}
+            if self.SETTINGS_PATH.exists():
+                try:
+                    previous = json.loads(
+                        self.SETTINGS_PATH.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001
+                    previous = {}
+            settings = self._collect_settings()
+            settings.update(_legacy_removebg_secret_items(previous))
+            _atomic_write_text(
+                self.SETTINGS_PATH,
+                json.dumps(settings, ensure_ascii=False, indent=2),
                 encoding="utf-8")
         except Exception:  # noqa: BLE001
             pass
@@ -1404,12 +1988,38 @@ class App(tk.Tk):
     def _on_removebg_toggle(self):
         """remove.bg チェックボックスのトグル：キー入力欄を表示/非表示"""
         if self.use_removebg_var.get():
-            self._apikey_frame.pack(fill="x", pady=(0, 4))
+            # before を指定しないと pack 順の末尾（チェックボックス群の下）に移動してしまう
+            ref = getattr(self, "_chk_frame", None)
+            if ref is not None and ref.winfo_exists():
+                self._apikey_frame.pack(fill="x", pady=(0, 4), before=ref)
+            else:
+                self._apikey_frame.pack(fill="x", pady=(0, 4))
         else:
             self._apikey_frame.pack_forget()
 
     def _on_close(self):
+        # 実行中に閉じると、daemonスレッドが img.save や config.xml の書き換えの
+        # 途中で殺され、壊れたPNGや壊れたconfig.xmlが残る。
+        th = getattr(self, "_worker", None)
+        if th is not None and th.is_alive():
+            if not messagebox.askyesno(
+                    t("確認", "Confirm"),
+                    t("処理中です。中断して終了しますか？（書き込み中のファイルを待ちます）",
+                      "A job is running. Cancel it and quit? (will wait for the file being written)")):
+                return
+            ev = getattr(self, "_cancel_event", None)
+            if ev is not None:
+                ev.set()
+            th.join(timeout=10.0)
         self._save_settings()
+        # 予約済みの _poll をキャンセルしてから破棄する
+        self._closing = True
+        pid = getattr(self, "_poll_id", None)
+        if pid is not None:
+            try:
+                self.after_cancel(pid)
+            except Exception:  # noqa: BLE001
+                pass
         self.destroy()
 
     def _build(self):
@@ -1420,25 +2030,25 @@ class App(tk.Tk):
 
         # ── ヘッダー ────────────────────────────────────────────
         header = ttk.Frame(outer); header.pack(fill="x", pady=(0, 6))
-        titlerow = ttk.Frame(header); titlerow.pack(side="left", fill="x", expand=True)
-        titles = []
+        header.columnconfigure(1, weight=1)
+        titlerow = ttk.Frame(header); titlerow.grid(row=0, column=0, sticky="w")
         lbl = ttk.Label(titlerow, text="FM Face Processor", style="Header.TLabel")
         lbl.pack(side="left")
-        titles.append(lbl)
         lbl2 = ttk.Label(titlerow, text=f"  {APP_VERSION}", style="Ver.TLabel")
         lbl2.pack(side="left")
-        titles.append(lbl2)
-        sub = ttk.Label(titlerow,
+        sub = ttk.Label(header,
                         text=t("顔画像＋IDスクショ → 透過PNG ＋ config.xml",
                                "Face + ID screenshot -> transparent PNG + config.xml"),
                         style="Sub.TLabel")
-        sub.pack(side="left", padx=(10, 0))
-        titles.append(sub)
+        sub.grid(row=0, column=1, sticky="w", padx=(10, 6))
 
-        btns = ttk.Frame(header); btns.pack(side="right")
+        btns = ttk.Frame(header); btns.grid(row=0, column=2, sticky="e")
         self.lang_btn = ttk.Button(btns,
                                    text="EN" if self.lang == "ja" else "日本語",
-                                   command=self._toggle_lang, width=4)
+                                   command=self._toggle_lang,
+                                   # Tk の文字幅は英数字基準。日本語3文字は width=4 だと
+                                   # 高DPI環境で右端が欠けるため、十分な余白を確保する。
+                                   width=7)
         self.lang_btn.pack(side="right", padx=(4, 0))
         self.theme_btn = ttk.Button(btns, text="", command=self._toggle_theme, width=3)
         self.theme_btn.pack(side="right")
@@ -1448,19 +2058,39 @@ class App(tk.Tk):
         fld.pack(fill="x", pady=(0, 6))
         fld.columnconfigure(1, weight=1)
         ttk.Label(fld, text=t("入力", "Input")).grid(row=0, column=0, sticky="w", pady=2)
-        ttk.Entry(fld, textvariable=self.in_var).grid(row=0, column=1, sticky="ew", padx=6)
+        in_ent = ttk.Entry(fld, textvariable=self.in_var)
+        in_ent.grid(row=0, column=1, sticky="ew", padx=6)
         ttk.Button(fld, text="…", command=self._pick_in, width=3).grid(row=0, column=2)
         ttk.Label(fld, text=t("出力", "Output")).grid(row=1, column=0, sticky="w", pady=2)
-        ttk.Entry(fld, textvariable=self.out_var).grid(row=1, column=1, sticky="ew", padx=6)
+        out_ent = ttk.Entry(fld, textvariable=self.out_var)
+        out_ent.grid(row=1, column=1, sticky="ew", padx=6)
         ttk.Button(fld, text="…", command=self._pick_out, width=3).grid(row=1, column=2)
+        # フォルダや画像をここに放り込めるようにする
+        self._register_drop(in_ent, self._on_drop_input)
+        self._register_drop(out_ent, self._on_drop_output)
+        self._register_drop(fld, self._on_drop_input)
+
+        if self.dnd_ok:
+            ttk.Label(fld, style="Sub.TLabel",
+                      text=t("フォルダや画像をこの枠にドロップしても設定できます",
+                             "You can also drop a folder or images onto this box")
+                      ).grid(row=3, column=1, sticky="w", padx=6, pady=(4, 0))
 
         prow = ttk.Frame(fld); prow.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
-        ttk.Button(prow, text=t("ペアフォルダを作る", "Make pair folders"),
-                   command=self._make_pair_folders).pack(side="left")
-        ttk.Button(prow, text=t("入力元画像をゴミ箱へ", "Trash source images"),
-                   command=self._delete_source_images).pack(side="left", padx=(8, 0))
-        ttk.Button(prow, text=t("config.xml の重複を除去", "Clean duplicate IDs in config.xml"),
-                   command=self._dedupe_config_dialog).pack(side="left", padx=(8, 0))
+        # 実行中に押されると処理中のファイルを壊すので、まとめて無効化できるようにする
+        self._busy_btns = []
+        b = ttk.Button(prow, text=t("一覧でIDを割り当てる", "Assign IDs from a list"),
+                       command=self._open_id_editor)
+        b.pack(side="left"); self._busy_btns.append(b)
+        b = ttk.Button(prow, text=t("ペアフォルダを作る", "Make pair folders"),
+                       command=self._make_pair_folders)
+        b.pack(side="left", padx=(8, 0)); self._busy_btns.append(b)
+        b = ttk.Button(prow, text=t("入力元画像をゴミ箱へ", "Trash source images"),
+                       command=self._delete_source_images)
+        b.pack(side="left", padx=(8, 0)); self._busy_btns.append(b)
+        b = ttk.Button(prow, text=t("config.xml の重複を除去", "Clean duplicate IDs in config.xml"),
+                       command=self._dedupe_config_dialog)
+        b.pack(side="left", padx=(8, 0)); self._busy_btns.append(b)
 
         # ── オプション ──────────────────────────────────────────
         opt = ttk.LabelFrame(outer, text=t("オプション", "Options"), padding=8)
@@ -1476,12 +2106,8 @@ class App(tk.Tk):
         ttk.Label(row, text=t("フィット", "Fit")).pack(side="left")
         ttk.Combobox(row, textvariable=self.fit_var, width=9, state="readonly",
                      values=["contain", "cover", "stretch"]).pack(side="left", padx=(6, 16))
-        ttk.Label(row, text=t("顔の大きさ", "Face size")).pack(side="left")
-        self.zoom_cb = ttk.Combobox(row, width=10, state="readonly",
-                                    values=ZOOM_LABELS[self.lang])
-        self.zoom_cb.current(self.zoom_idx)
-        self.zoom_cb.bind("<<ComboboxSelected>>", self._on_zoom)
-        self.zoom_cb.pack(side="left", padx=6)
+        ttk.Label(row, text=t("顔サイズ", "Face size")).pack(side="left")
+        ttk.Entry(row, textvariable=self.face_size_var, width=5).pack(side="left", padx=(6, 0))
 
         row2 = ttk.Frame(opt); row2.pack(fill="x", pady=(0, 4))
         ttk.Label(row2, text=t("背景モデル", "BG model")).pack(side="left")
@@ -1489,15 +2115,16 @@ class App(tk.Tk):
                      values=["isnet-general-use", "birefnet-general", "birefnet-general-lite",
                              "birefnet-portrait", "u2net_human_seg", "u2net"]).pack(side="left", padx=(6, 16))
         ttk.Checkbutton(row2, text=t("髪のフチをなめらかにする", "Smooth hair edges (alpha matting)"),
-                        variable=self.matting_var).pack(side="left", padx=(0, 16))
-        ttk.Checkbutton(row2, text=t("remove.bg API を使う（髪のフチが綺麗に）",
-                                     "Use remove.bg API (cleaner hair edges)"),
+                        variable=self.matting_var).pack(side="left")
+        row2b = ttk.Frame(opt); row2b.pack(fill="x", pady=(0, 4))
+        ttk.Checkbutton(row2b, text=t("remove.bg API を使う（画像を外部送信）",
+                                      "Use remove.bg API (uploads the image)"),
                         variable=self.use_removebg_var,
                         command=self._on_removebg_toggle).pack(side="left")
 
         self._apikey_frame = rowk = ttk.Frame(opt)
-        ttk.Label(rowk, text=t("remove.bg APIキー（任意・髪がきれいに）",
-                               "remove.bg API key (optional, best hair)")).pack(side="left")
+        ttk.Label(rowk, text=t("remove.bg APIキー（保存しません）",
+                               "remove.bg API key (not saved)")).pack(side="left")
         self._apikey_entry = ttk.Entry(rowk, textvariable=self.removebg_var, width=30, show="●")
         self._apikey_entry.pack(side="left", padx=(6, 0))
         self._apikey_show = tk.BooleanVar(value=False)
@@ -1508,7 +2135,7 @@ class App(tk.Tk):
         if self.use_removebg_var.get():
             rowk.pack(fill="x", pady=(0, 4))
 
-        chk = ttk.Frame(opt); chk.pack(fill="both", expand=True)
+        chk = self._chk_frame = ttk.Frame(opt); chk.pack(fill="both", expand=True)
         chk.columnconfigure(0, weight=1)
         chk.columnconfigure(1, weight=1)
         ttk.Checkbutton(chk, text=t("IDを自動で読み取る", "Auto-read ID"),
@@ -1557,8 +2184,10 @@ class App(tk.Tk):
         self.open_btn = ttk.Button(act, text=t("出力フォルダを開く", "Open output folder"),
                                    command=self._open_out, state="disabled")
         self.open_btn.pack(side="left", padx=8)
-        ttk.Button(act, text=t("ログをすべて削除", "Delete all logs"),
-                   command=self._delete_logs).pack(side="left", padx=8)
+        _dl = ttk.Button(act, text=t("ログをすべて削除", "Delete all logs"),
+                         command=self._delete_logs)
+        _dl.pack(side="left", padx=8)
+        self._busy_btns.append(_dl)
 
         self.pb = ttk.Progressbar(outer, mode="determinate"); self.pb.pack(fill="x", pady=(0, 4))
         self.status_lbl = ttk.Label(outer, text="", style="Sub.TLabel")
@@ -1576,11 +2205,37 @@ class App(tk.Tk):
             self.log.see("end")
             self.log_has_content = True
         else:
-            self._log(t("顔写真とIDスクショを同じフォルダに入れて「実行」を押してください。",
-                        "Put face photos and ID screenshots in one folder, then press Run."))
+            # 初期案内は処理ログとして保持しない。保持すると言語切替後も
+            # 切替前の言語の案内が復元されてしまう。
+            hint = t("顔写真とIDスクショを同じフォルダに入れて「実行」を押してください。",
+                     "Put face photos and ID screenshots in one folder, then press Run.")
+            self.log.insert("end", hint + "\n")
+            self.log_has_content = False
 
         self._refresh_theme_btn()
         self.apply_theme(self.mode)
+        self._apply_busy_state()
+
+    def _apply_busy_state(self):
+        """実行中かどうかをボタンの有効/無効に反映する。
+        _build() はウィジェットを作り直すので、言語切替の直後にも必ず呼ぶこと。
+        （以前は再構築で「実行」が有効に戻り、同じ出力フォルダに2本目のスレッドを
+          起動できてしまい、PNGとconfig.xmlが壊れる上に1本目が停止不能になった）"""
+        running = bool(getattr(self, "_running", False))
+        try:
+            if running:
+                self.run_btn.config(state="disabled", text=t("処理中…", "Working…"))
+                self.cancel_btn.config(state="normal")
+                self.open_btn.config(state="disabled")
+            else:
+                self.run_btn.config(state="normal", text=t("実行", "Run"))
+                self.cancel_btn.config(state="disabled")
+                if getattr(self, "last_out", None):
+                    self.open_btn.config(state="normal")
+            for b in getattr(self, "_busy_btns", []):
+                b.config(state="disabled" if running else "normal")
+        except Exception:  # noqa: BLE001
+            pass
 
     def apply_theme(self, mode):
         self.mode = mode
@@ -1706,10 +2361,9 @@ class App(tk.Tk):
         self.lang = "en" if self.lang == "ja" else "ja"
         set_lang(self.lang)
         self._build()
-        self.after(100, self._poll)
+        # _poll は自分で再スケジュールし続けるので、ここで呼ぶとチェーンが二重になる
+        # （切り替えるたびにポーリングループが1本ずつ増え続けていた）
 
-    def _on_zoom(self, _evt=None):
-        self.zoom_idx = self.zoom_cb.current()
 
     def _pick_in(self):
         d = filedialog.askdirectory()
@@ -1728,19 +2382,348 @@ class App(tk.Tk):
                                    t("入力フォルダを先に選んでください。",
                                      "Please select the input folder first."))
             return
+        if not Path(base).is_dir():
+            # 入力欄は自由入力で、設定ファイルから復元した古いパスのこともある。
+            # 存在確認をしないと FileNotFoundError がコールバックから素通りして
+            # 「押しても何も起きない」状態になる。
+            messagebox.showwarning(t("確認", "Notice"),
+                                   t(f"入力フォルダが見つかりません:\n{base}",
+                                     f"Input folder not found:\n{base}"))
+            return
         n = simpledialog.askinteger(t("ペアフォルダを作る", "Make pair folders"),
                                     t("作るフォルダの数:", "Number of folders to create:"),
                                     minvalue=1, maxvalue=200)
         if not n:
             return
         made = 0
-        for i in range(1, n + 1):
-            p = Path(base) / f"pair_{i:03d}"
-            p.mkdir(exist_ok=True)
-            made += 1
+        try:
+            for i in range(1, n + 1):
+                p = Path(base) / f"pair_{i:03d}"
+                p.mkdir(exist_ok=True)
+                made += 1
+        except OSError as e:
+            messagebox.showerror(t("エラー", "Error"),
+                                 t(f"フォルダを作成できませんでした（{made} 個目まで作成済み）:\n{e}",
+                                   f"Could not create folders (created {made} so far):\n{e}"))
+            return
         messagebox.showinfo(t("完了", "Done"),
                             t(f"{made} 個のフォルダを作成しました。\n各フォルダに「顔写真」と「IDスクショ」を1枚ずつ入れてから実行してください。",
                               f"Created {made} folders.\nPut one face photo and one ID screenshot in each, then run."))
+
+    # ---------- ドラッグ＆ドロップ ----------
+    def _dnd_paths(self, data):
+        """ドロップされた文字列をパスの配列にする。
+        Tclのリスト形式（空白を含むパスは {..} で括られる）なので splitlist で分解する。
+        「C:/Users/owner/Pictures/face processor」のような空白入りパスがそのまま扱える。"""
+        try:
+            raw = self.tk.splitlist(data)
+        except Exception:  # noqa: BLE001
+            raw = [data]
+        out = []
+        for r in raw:
+            r = str(r).strip().strip("{}")
+            if r:
+                out.append(Path(r))
+        return out
+
+    def _register_drop(self, widget, handler):
+        """ウィジェットをドロップ先にする。tkinterdnd2 が無ければ何もしない。"""
+        if not self.dnd_ok:
+            return
+        try:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", handler)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _split_dropped(self, event):
+        """ドロップされたものを (フォルダ, 対応画像, その他) に分ける。"""
+        dirs, imgs, other = [], [], []
+        for p in self._dnd_paths(event.data):
+            try:
+                if p.is_dir():
+                    dirs.append(p)
+                elif p.is_file() and p.suffix.lower() in SUPPORTED_EXT:
+                    imgs.append(p)
+                else:
+                    other.append(p)
+            except OSError:
+                other.append(p)
+        return dirs, imgs, other
+
+    def _on_drop_input(self, event):
+        """フォルダなら入力に設定。画像ならその親フォルダを入力に設定。"""
+        dirs, imgs, other = self._split_dropped(event)
+        if dirs:
+            self.in_var.set(str(dirs[0]))
+            if len(dirs) > 1:
+                self._log(t(f"[i] フォルダが複数ドロップされたので最初の1つを使います: {dirs[0].name}",
+                            f"[i] Multiple folders dropped; using the first: {dirs[0].name}"))
+            return
+        if imgs:
+            parents = {p.parent for p in imgs}
+            if len(parents) > 1:
+                messagebox.showwarning(
+                    t("確認", "Notice"),
+                    t("複数のフォルダにまたがる画像がドロップされました。\n"
+                      "1つのフォルダにまとめてからドロップしてください。",
+                      "The dropped images live in different folders.\n"
+                      "Please put them in one folder first."))
+                return
+            self.in_var.set(str(next(iter(parents))))
+            return
+        if other:
+            messagebox.showwarning(t("確認", "Notice"),
+                                   t("対応していないファイルです。", "Unsupported file."))
+
+    def _on_drop_output(self, event):
+        dirs, imgs, _o = self._split_dropped(event)
+        target = dirs[0] if dirs else (imgs[0].parent if imgs else None)
+        if target is not None:
+            self.out_var.set(str(target))
+
+    @staticmethod
+    def _incoming_images(in_dir, dirs, imgs):
+        """ドロップされたフォルダ/画像から、入力フォルダの外にある対応画像を集める。"""
+        found = list(imgs)
+        for d in dirs:
+            try:
+                found += [q for q in sorted(d.iterdir())
+                          if q.is_file() and q.suffix.lower() in SUPPORTED_EXT]
+            except OSError:
+                pass
+        try:
+            here = Path(in_dir).resolve()
+        except OSError:
+            here = Path(in_dir)
+        out, seen = [], set()
+        for q in found:
+            try:
+                if q.parent.resolve() == here:
+                    continue                      # 既に入力フォルダにある
+            except OSError:
+                pass
+            key = str(q)
+            if key not in seen:
+                seen.add(key); out.append(q)
+        return out
+
+    def _copy_into(self, in_dir, paths):
+        """入力フォルダへコピーする。同名は上書きせず連番を付ける。"""
+        added = 0
+        for q in paths:
+            dest = Path(in_dir) / q.name
+            n = 1
+            while dest.exists():
+                dest = Path(in_dir) / f"{q.stem}_{n}{q.suffix}"
+                n += 1
+            try:
+                shutil.copy2(q, dest); added += 1
+            except Exception as e:  # noqa: BLE001
+                self._log(t(f"  [!] コピー失敗: {q.name}: {e}",
+                            f"  [!] Copy failed: {q.name}: {e}"))
+        self._log(t(f"[i] {added} 枚を入力フォルダにコピーしました",
+                    f"[i] Copied {added} image(s) into the input folder"))
+        return added
+
+    # ---------- 一覧モード（ID割り当て） ----------
+    def _open_id_editor(self, preset=None):
+        """入力フォルダの画像を一覧にして、行ごとにIDを打てるウィンドウを開く。
+        ペアフォルダもIDスクショもOCRも使わずに「画像 -> ID」を決められる。
+        入力内容は入力フォルダの ids.csv に保存され、実行時に自動で使われる。"""
+        base = self.in_var.get()
+        if not base or not Path(base).is_dir():
+            messagebox.showwarning(t("確認", "Notice"),
+                                   t("入力フォルダを先に選んでください。",
+                                     "Please select the input folder first."))
+            return
+        in_dir = Path(base)
+        files = sorted(f for f in in_dir.iterdir() if f.suffix.lower() in SUPPORTED_EXT)
+        if not files:
+            messagebox.showinfo(t("情報", "Info"),
+                                t("入力フォルダに画像がありません。",
+                                  "No images in the input folder."))
+            return
+        if len(files) > ID_EDITOR_MAX_ROWS:
+            if not messagebox.askyesno(
+                    t("確認", "Confirm"),
+                    t(f"画像が {len(files)} 枚あります。先頭 {ID_EDITOR_MAX_ROWS} 枚だけ表示しますか？",
+                      f"There are {len(files)} images. Show only the first {ID_EDITOR_MAX_ROWS}?")):
+                return
+            files = files[:ID_EDITOR_MAX_ROWS]
+
+        existing = read_id_map(in_dir)
+        if preset:
+            existing.update(preset)      # ドロップで作り直したときに入力中の値を引き継ぐ
+        win = tk.Toplevel(self)
+        win.title(t("一覧でIDを割り当てる", "Assign IDs from a list"))
+        win.geometry("640x680")
+        set_titlebar_dark(win, self.mode == "dark")
+        try:
+            win.configure(bg=PALETTES[self.mode]["bg"])
+        except Exception:  # noqa: BLE001
+            pass
+
+        top = ttk.Frame(win, padding=8); top.pack(fill="x")
+        ttk.Button(top, text=t("IDをまとめて貼り付け", "Paste IDs in bulk"),
+                   command=lambda: self._bulk_paste_ids(win)).pack(side="left")
+        ttk.Button(top, text=t("空欄だけクリア", "Clear all"),
+                   command=lambda: [v.set("") for _, v in self._id_rows]).pack(side="left", padx=8)
+        count_lbl = ttk.Label(top, text="", style="Sub.TLabel"); count_lbl.pack(side="right")
+
+        ttk.Label(win, padding=(8, 0),
+                  text=t("FMの選手一覧からIDを縦に並べてコピーし、"
+                         "「IDをまとめて貼り付け」で上から順に流し込めます。",
+                         "Copy IDs as one per line from FM, then use "
+                         "\"Paste IDs in bulk\" to fill the rows top-down."),
+                  style="Sub.TLabel", wraplength=600).pack(fill="x")
+
+        # スクロールできる行リスト
+        wrap = ttk.Frame(win, padding=8); wrap.pack(fill="both", expand=True)
+        canvas = tk.Canvas(wrap, highlightthickness=0, borderwidth=0)
+        try:
+            canvas.configure(bg=PALETTES[self.mode]["bg"])
+        except Exception:  # noqa: BLE001
+            pass
+        vsb = ttk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y"); canvas.pack(side="left", fill="both", expand=True)
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+
+        self._id_rows = []          # [(Path, StringVar)]
+        self._id_thumbs = []        # PhotoImage の参照を保持しないとGCで消える
+        thumb_ok = True
+        for i, f in enumerate(files):
+            row = ttk.Frame(inner); row.pack(fill="x", pady=1)
+            if thumb_ok:
+                try:
+                    from PIL import Image as _I, ImageTk as _ITk
+                    im = _I.open(f); im.thumbnail((44, 44), _I.LANCZOS)
+                    ph = _ITk.PhotoImage(im.convert("RGBA"))
+                    self._id_thumbs.append(ph)
+                    ttk.Label(row, image=ph).pack(side="left", padx=(0, 6))
+                except Exception:  # noqa: BLE001
+                    thumb_ok = False       # 1枚失敗したら以降は諦める（Pillow/ImageTk無し等）
+            ttk.Label(row, text=f.name, width=34, anchor="w").pack(side="left")
+            var = tk.StringVar(value=existing.get(f.name, ""))
+            ent = ttk.Entry(row, textvariable=var, width=14)
+            ent.pack(side="left", padx=6)
+            if i == 0:
+                ent.focus_set()
+            self._id_rows.append((f, var))
+
+        def refresh_count(*_a):
+            n = sum(1 for _, v in self._id_rows if v.get().strip())
+            count_lbl.config(text=t(f"{len(self._id_rows)} 件中 {n} 件にID入力済み",
+                                    f"{n} of {len(self._id_rows)} have an ID"))
+        for _, v in self._id_rows:
+            v.trace_add("write", refresh_count)
+        refresh_count()
+
+        def collect():
+            return {f.name: v.get().strip() for f, v in self._id_rows if v.get().strip()}
+
+        def save(and_run=False):
+            mapping = collect()
+            if not mapping:
+                messagebox.showwarning(t("確認", "Notice"),
+                                       t("IDが1件も入力されていません。", "No IDs entered."))
+                return
+            bad = [k for k, v in mapping.items() if not v.isdigit()]
+            if bad and not messagebox.askyesno(
+                    t("確認", "Confirm"),
+                    t(f"数字でないIDが {len(bad)} 件あります（実行時にスキップされます）。続けますか？",
+                      f"{len(bad)} ID(s) are not numeric (they will be skipped). Continue?")):
+                return
+            path = write_id_map(in_dir, mapping)
+            self._log(t(f"[i] 対応表を保存しました: {path}", f"[i] Saved ID map: {path}"))
+            win.destroy()
+            if and_run:
+                self._run()
+            else:
+                messagebox.showinfo(t("完了", "Done"),
+                                    t(f"{len(mapping)} 件を {ID_MAP_FILENAME} に保存しました。\n"
+                                      "「実行」を押すとこの対応表が使われます。",
+                                      f"Saved {len(mapping)} entries to {ID_MAP_FILENAME}.\n"
+                                      "Press Run to use it."))
+
+        def on_drop(event):
+            """一覧に画像をドロップしたら、入力フォルダにコピーして並べ直す。"""
+            dirs, imgs, _o = self._split_dropped(event)
+            incoming = self._incoming_images(in_dir, dirs, imgs)
+            if not incoming:
+                return
+            if not messagebox.askyesno(
+                    t("確認", "Confirm"),
+                    t(f"{len(incoming)} 枚を入力フォルダにコピーして一覧に追加しますか？\n{in_dir}",
+                      f"Copy {len(incoming)} image(s) into the input folder and add them?\n{in_dir}"),
+                    parent=win):
+                return
+            self._copy_into(in_dir, incoming)
+            keep = collect()
+            win.destroy()
+            self._open_id_editor(preset=keep)
+
+        self._register_drop(win, on_drop)
+        if self.dnd_ok:
+            ttk.Label(win, padding=(8, 0), style="Sub.TLabel",
+                      text=t("このウィンドウに画像をドロップすると入力フォルダにコピーして追加します",
+                             "Drop images here to copy them into the input folder")
+                      ).pack(fill="x")
+
+        btm = ttk.Frame(win, padding=8); btm.pack(fill="x")
+        ttk.Button(btm, text=t("保存して実行", "Save and run"), style="Accent.TButton",
+                   command=lambda: save(True)).pack(side="left")
+        ttk.Button(btm, text=t("保存だけ", "Save only"),
+                   command=lambda: save(False)).pack(side="left", padx=8)
+        ttk.Button(btm, text=t("閉じる", "Close"), command=win.destroy).pack(side="right")
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+
+    def _bulk_paste_ids(self, parent):
+        """IDを改行区切りで貼り付けて、一覧の上から順に流し込む。"""
+        dlg = tk.Toplevel(parent)
+        dlg.title(t("IDをまとめて貼り付け", "Paste IDs in bulk"))
+        dlg.geometry("360x420")
+        dlg.transient(parent); dlg.grab_set()
+        ttk.Label(dlg, padding=8, wraplength=330, style="Sub.TLabel",
+                  text=t("1行に1つIDを貼り付けてください。一覧の上から順に入ります。"
+                         "数字以外の文字が混ざっていても数字だけ拾います。",
+                         "One ID per line. They are filled from the top of the list. "
+                         "Non-digit characters are ignored.")).pack(fill="x")
+        txt = tk.Text(dlg, height=18, wrap="none")
+        txt.pack(fill="both", expand=True, padx=8)
+        txt.focus_set()
+
+        def apply_ids():
+            raw = txt.get("1.0", "end").splitlines()
+            ids = []
+            for line in raw:
+                digits = re.sub(r"[^0-9]", "", line)
+                if digits:
+                    ids.append(digits)
+            if not ids:
+                messagebox.showwarning(t("確認", "Notice"),
+                                       t("IDが見つかりませんでした。", "No IDs found."), parent=dlg)
+                return
+            rows = self._id_rows
+            if len(ids) != len(rows) and not messagebox.askyesno(
+                    t("確認", "Confirm"),
+                    t(f"ID {len(ids)} 件に対して画像は {len(rows)} 枚です。"
+                      f"上から {min(len(ids), len(rows))} 件だけ入れますか？",
+                      f"{len(ids)} IDs vs {len(rows)} images. "
+                      f"Fill only the first {min(len(ids), len(rows))}?"), parent=dlg):
+                return
+            for (_, var), uid in zip(rows, ids):
+                var.set(uid)
+            dlg.destroy()
+
+        bar = ttk.Frame(dlg, padding=8); bar.pack(fill="x")
+        ttk.Button(bar, text=t("流し込む", "Fill"), style="Accent.TButton",
+                   command=apply_ids).pack(side="left")
+        ttk.Button(bar, text=t("キャンセル", "Cancel"), command=dlg.destroy).pack(side="right")
 
     def _delete_source_images(self):
         base = self.in_var.get()
@@ -1773,7 +2756,11 @@ class App(tk.Tk):
         failed = 0
         for f in targets:
             try:
-                send_to_trash(f)
+                # 戻り値 False も失敗（Windows APIのフォールバックが失敗した場合）。
+                # 以前は例外だけ数えていたので「N枚送りました」と嘘の報告をしていた。
+                if not send_to_trash(f):
+                    self._log(t(f"  [!] 削除失敗: {f.name}", f"  [!] Could not delete: {f.name}"))
+                    failed += 1
             except Exception as e:  # noqa: BLE001
                 self._log(t(f"  [!] 削除失敗: {f.name}: {e}", f"  [!] Could not delete: {f.name}: {e}"))
                 failed += 1
@@ -1790,7 +2777,7 @@ class App(tk.Tk):
         if not start:
             return
         try:
-            out, removed, kept = dedupe_config(Path(start))
+            out, backup, removed, kept = dedupe_config(Path(start))
         except Exception as e:  # noqa: BLE001
             messagebox.showerror(t("エラー", "Error"), str(e))
             return
@@ -1800,8 +2787,8 @@ class App(tk.Tk):
                                   f"config.xml: no duplicates ({kept} remain)."))
         else:
             messagebox.showinfo(t("完了", "Done"),
-                                t(f"{removed} 件の重複を削除しました（残り {kept} 件）。\n元のファイルは config.xml.bak に保存しました。",
-                                  f"Removed {removed} duplicate(s) ({kept} remain).\nThe original was saved as config.xml.bak."))
+                                t(f"{removed} 件の重複を削除しました（残り {kept} 件）。\n元のファイル: {backup.name}",
+                                  f"Removed {removed} duplicate(s) ({kept} remain).\nOriginal: {backup.name}"))
 
     def _cancel(self):
         if hasattr(self, "_cancel_event"):
@@ -1850,12 +2837,32 @@ class App(tk.Tk):
                                   f"Deleted {len(logs)} log file(s)."))
 
     def _log(self, msg):
+        # _build() でウィジェットを作り直すと表示が消えるので、内容を保持しておく
+        # （log_lines は復元側だけあって、詰める側が無かった）
+        self.log_lines.append(msg)
+        if len(self.log_lines) > 5000:
+            del self.log_lines[:1000]
         self.log.insert("end", msg + "\n")
         self.log.see("end")
         self.log_has_content = True
 
     def _show_preview(self, b64, ev, holder):
-        """保存前プレビューのダイアログ。選択をholderに入れてevをセットする。"""
+        """保存前プレビューのダイアログ。選択をholderに入れてevをセットする。
+        ここで例外が出ると、ev を待っているワーカースレッドが永久に止まる
+        （キャンセルも効かずアプリを殺すしかなくなる）ので、必ず finally でセットする。"""
+        try:
+            self._show_preview_impl(b64, ev, holder)
+        except Exception as e:  # noqa: BLE001
+            try:
+                self._log(t(f"[!] プレビューを表示できませんでした（保存して続行します）: {e}",
+                            f"[!] Could not show preview (saving and continuing): {e}"))
+            except Exception:  # noqa: BLE001
+                pass
+            holder.setdefault("r", "save")
+        finally:
+            ev.set()
+
+    def _show_preview_impl(self, b64, ev, holder):
         import base64
         from PIL import Image as _I, ImageTk
         data = base64.b64decode(b64)
@@ -1900,18 +2907,20 @@ class App(tk.Tk):
                     self._current_file = payload
                 elif kind == "preview":
                     b64, ev, holder = payload
-                    self._show_preview(b64, ev, holder)
+                    try:
+                        self._show_preview(b64, ev, holder)
+                    finally:
+                        ev.set()
                 elif kind == "done":
                     elapsed = time.monotonic() - getattr(self, "_run_start", time.monotonic())
-                    self.run_btn.config(state="normal", text=t("実行", "Run"))
-                    self.cancel_btn.config(state="disabled")
+                    self._running = False
+                    self._apply_busy_state()
                     self.status_lbl.config(text="")
                     self._current_file = ""
                     self._save_settings()
                     if payload:
                         messagebox.showerror(t("エラー", "Error"), str(payload))
                     else:
-                        self.open_btn.config(state="normal")
                         elapsed_msg = t(f"処理が終わりました（{elapsed:.0f}秒）。\nログでペアの対応を確認してください。",
                                         f"Finished in {elapsed:.0f}s.\nCheck the log for the pairings.")
                         messagebox.showinfo(t("完了", "Done"), elapsed_msg)
@@ -1924,7 +2933,7 @@ class App(tk.Tk):
             except Exception:  # noqa: BLE001
                 pass
         try:
-            if self.run_btn["state"] == "disabled" and hasattr(self, "_run_start"):
+            if getattr(self, "_running", False) and hasattr(self, "_run_start"):
                 elapsed = time.monotonic() - self._run_start
                 fname = getattr(self, "_current_file", "")
                 text = t(f"処理中… {elapsed:.0f}秒経過", f"Processing… {elapsed:.0f}s")
@@ -1933,15 +2942,27 @@ class App(tk.Tk):
                 self.status_lbl.config(text=text)
         except Exception:  # noqa: BLE001
             pass
-        self.after(100, self._poll)
+        # ウィンドウ破棄後に after が発火すると Tcl が
+        # invalid command name "..._poll" を投げる（終了時にstderrへ出る）
+        if not getattr(self, "_closing", False):
+            try:
+                self._poll_id = self.after(100, self._poll)
+            except tk.TclError:
+                pass
 
     def _run(self):
+        th = getattr(self, "_worker", None)
+        if th is not None and th.is_alive():
+            # ボタンの無効化だけを頼りにすると、言語切替で再構築された直後に
+            # 同じ出力フォルダへ2本目のスレッドを起動できてしまう
+            messagebox.showwarning(t("確認", "Notice"),
+                                   t("すでに処理中です。", "A job is already running."))
+            return
         if not self.in_var.get():
             messagebox.showwarning(t("確認", "Notice"),
                                    t("入力フォルダを選んでください。", "Please select the input folder."))
             return
         try:
-            idx = self.zoom_idx
             opts = {
                 "input":         self.in_var.get(),
                 "output":        self.out_var.get() or "processed",
@@ -1949,8 +2970,9 @@ class App(tk.Tk):
                 "scale":         float(self.scale_var.get()),
                 "ocr_id":        self.ocr_var.get(),
                 "face_crop":     self.facecrop_var.get(),
-                "face_size":     ZOOM_SIZE[idx],
-                "face_neck":     ZOOM_NECK[idx],
+                "face_size":     max(FACE_SIZE_MIN,
+                                     min(float(self.face_size_var.get()), FACE_SIZE_MAX)),
+                "face_neck":     FACE_NECK,
                 "upscale":       self.upscale_var.get(),
                 "ai_upscale":    self.ai_var.get(),
                 "bg_removal":    self.bg_var.get(),
@@ -1970,6 +2992,16 @@ class App(tk.Tk):
                                    t("サイズ・倍率は数値で入力してください。",
                                      "Size and upscale must be numbers."))
             return
+        if not 1 <= opts["size"] <= 4096:
+            messagebox.showwarning(t("確認", "Notice"),
+                                   t("出力サイズは 1〜4096 px で指定してください。",
+                                     "Output size must be between 1 and 4096 px."))
+            return
+        if not 0 < opts["scale"] <= 8:
+            messagebox.showwarning(t("確認", "Notice"),
+                                   t("拡大倍率は 0 より大きく 8 以下で指定してください。",
+                                     "Upscale factor must be greater than 0 and no more than 8."))
+            return
 
         if self.preview_var.get():
             state = {"all": False}
@@ -1984,7 +3016,9 @@ class App(tk.Tk):
                 ev = threading.Event()
                 holder = {}
                 self.q.put(("preview", (base64.b64encode(buf.getvalue()).decode("ascii"), ev, holder)))
-                ev.wait()
+                # 万一 ev がセットされないままでも固まらないように上限を置く
+                if not ev.wait(timeout=600):
+                    return "save"
                 r = holder.get("r", "save")
                 if r == "all":
                     state["all"] = True
@@ -2005,11 +3039,11 @@ class App(tk.Tk):
         self._run_start = time.monotonic()
         self._current_file = ""
 
-        self.run_btn.config(state="disabled", text=t("処理中…", "Working…"))
-        self.cancel_btn.config(state="normal")
-        self.open_btn.config(state="disabled")
+        self._running = True
+        self._apply_busy_state()
         self.pb.configure(value=0, maximum=1)
         self.log.delete("1.0", "end")
+        self.log_lines.clear()
         self.log_has_content = False
 
         def _log_fn(msg):
@@ -2036,7 +3070,8 @@ class App(tk.Tk):
                     set_low_power(False)
                 self.q.put(("done", err))
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._worker = threading.Thread(target=worker, daemon=True)
+        self._worker.start()
 
 if __name__ == "__main__":
     # ── 多重起動防止 ──────────────────────────────────────────
