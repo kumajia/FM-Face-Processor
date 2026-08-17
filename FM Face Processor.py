@@ -22,6 +22,7 @@ OCRを使わず「ファイル名＝ID」で動かすことも可能（チェッ
 """
 
 import io
+import math
 import os
 import re
 import shutil
@@ -54,7 +55,7 @@ except Exception:  # noqa: BLE001
     HAS_DND = False
 
 SUPPORTED_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
-APP_VERSION = "v2.0.0"
+APP_VERSION = "v2.1.0"
 # 「ID」に続く数字（FMのperson ID）を拾う
 # FMのperson IDは5桁以上。2桁以上を拾うと "Real Madrid 2024 Unique ID 1928374651"
 # のような文字列で年号や背番号を先に拾ってしまうため下限を上げてある。
@@ -578,8 +579,12 @@ def _get_yunet(log):
 
 
 def detect_face_box_yunet(img, log):
-    """YuNetで顔を検出し ((x, y, w, h), eye_mid_y) を返す。使えなければ None。
-    eye_mid_y: 両目の中点Y座標（ランドマーク取得できない場合は None）。"""
+    """YuNetで顔を検出し、顔box・目/鼻座標・両目の傾きを返す。
+
+    戻り値は ``(box, eye_mid_y, eye_mid_x, nose_x, eye_angle)``。
+    eye_angle は画像の水平線に対する両目の角度（度）で、ランドマークを
+    取得できない場合は None。v2.1.0ではこの角度を自動水平補正に使う。
+    """
     det = _get_yunet(log)
     if det is None:
         return None
@@ -612,11 +617,20 @@ def detect_face_box_yunet(img, log):
         eye_mid_y = None
         eye_mid_x = None  # 目の水平中点（横ズレ補正用）
         nose_x = None     # 鼻のx座標（目が使えない時の横ズレ補正フォールバック）
+        eye_angle = None  # 両目を結ぶ線の角度。傾き補正に使用
         if len(best) >= 10:
             try:
-                eye_mid_x = (float(best[4]) + float(best[6])) / 2.0   # 右目x, 左目x
-                eye_mid_y = (float(best[5]) + float(best[7])) / 2.0   # 右目y, 左目y
+                right_eye_x, right_eye_y = float(best[4]), float(best[5])
+                left_eye_x, left_eye_y = float(best[6]), float(best[7])
+                eye_mid_x = (right_eye_x + left_eye_x) / 2.0
+                eye_mid_y = (right_eye_y + left_eye_y) / 2.0
                 nose_x    =  float(best[8])                           # 鼻x
+                dx = left_eye_x - right_eye_x
+                dy = left_eye_y - right_eye_y
+                if abs(dx) >= 2.0:
+                    candidate = math.degrees(math.atan2(dy, dx))
+                    if abs(candidate) <= 45.0:
+                        eye_angle = candidate
             except Exception:
                 pass
         elif len(best) >= 8:
@@ -625,7 +639,8 @@ def detect_face_box_yunet(img, log):
                 eye_mid_y = (float(best[5]) + float(best[7])) / 2.0
             except Exception:
                 pass
-        return (int(round(bx)), int(round(by)), int(round(bw)), int(round(bh))), eye_mid_y, eye_mid_x, nose_x
+        return ((int(round(bx)), int(round(by)), int(round(bw)), int(round(bh))),
+                eye_mid_y, eye_mid_x, nose_x, eye_angle)
     except Exception:
         return None
 
@@ -651,8 +666,8 @@ def _get_face_cascade_alt():
 
 
 def detect_face_box(img, log):
-    """顔を検出し ((x, y, w, h), eye_mid_y) を返す。検出できなければ None。
-    YuNet（同梱 .onnx）を優先し、使えない場合は Haar にフォールバック（eye_mid_y=None）。"""
+    """顔を検出し ``(box, eye_y, eye_x, nose_x, eye_angle)`` を返す。
+    YuNet（同梱 .onnx）を優先し、使えない場合は Haar にフォールバックする。"""
     try:
         import cv2  # noqa: F401
         import numpy as np
@@ -661,7 +676,7 @@ def detect_face_box(img, log):
         return None
     yb = detect_face_box_yunet(img, log)
     if yb is not None:
-        return yb  # ((x,y,w,h), eye_mid_y)
+        return yb
     try:
         import cv2
         arr = np.array(img.convert("RGB"))
@@ -704,10 +719,82 @@ def detect_face_box(img, log):
         # 検出用に拡大していた場合は座標を元のスケールへ戻す
         if det_scale != 1.0:
             x, y, w, h = (x / det_scale, y / det_scale, w / det_scale, h / det_scale)
-        return (int(round(x)), int(round(y)), int(round(w)), int(round(h))), None, None, None
+        return (int(round(x)), int(round(y)), int(round(w)), int(round(h))), None, None, None, None
     except Exception as e:  # noqa: BLE001
         log(t(f"  [i] 顔検出に失敗（全体を使用）: {e}", f"  [i] Face detection failed (using whole image): {e}"))
         return None
+
+
+# 自動補正する最小/最大角度。小さすぎる補正は再サンプリングによる劣化の方が
+# 目立ち、大きすぎる角度は横顔やランドマーク誤検出の可能性が高い。
+AUTO_LEVEL_MIN_DEG = 0.8
+AUTO_LEVEL_MAX_DEG = 20.0
+
+
+def _flatten_for_detection(img):
+    """透過画像を顔検出しやすい白背景RGBへ合成する。"""
+    from PIL import Image
+    rgba = img.convert("RGBA")
+    flat = Image.new("RGB", rgba.size, (255, 255, 255))
+    flat.paste(rgba.convert("RGB"), mask=rgba.getchannel("A"))
+    return flat
+
+
+def straighten_face(img, det, already_cutout, log=None):
+    """YuNetの両目ランドマークを使って顔を水平にし、再検出結果も返す。
+
+    回転後にもう一度顔を検出し、目の傾きが改善した場合だけ採用する。
+    これにより、横顔やランドマーク誤検出で画像を悪化させるのを防ぐ。
+    """
+    if det is None or len(det) < 5:
+        return img, det
+    eye_angle = det[4]
+    if eye_angle is None or abs(eye_angle) < AUTO_LEVEL_MIN_DEG:
+        return img, det
+    if abs(eye_angle) > AUTO_LEVEL_MAX_DEG:
+        if log is not None:
+            log(t(f"  [i] 顔の傾き {eye_angle:+.1f}° は大きすぎるため自動補正をスキップ",
+                  f"  [i] Skipping auto-level: face angle {eye_angle:+.1f}° is too large"))
+        return img, det
+
+    from PIL import Image
+    resampling = getattr(Image, "Resampling", Image)
+    fill = (0, 0, 0, 0) if already_cutout else (255, 255, 255, 255)
+    rotated = img.convert("RGBA").rotate(
+        eye_angle, resample=resampling.BICUBIC, expand=True, fillcolor=fill)
+    redetected = detect_face_box(_flatten_for_detection(rotated), log or (lambda _m: None))
+    if redetected is None:
+        return img, det
+    residual = redetected[4] if len(redetected) >= 5 else None
+    # YuNetが再び角度を返した場合、明確に改善していなければ元画像へ戻す。
+    if residual is not None and abs(residual) >= abs(eye_angle) - 0.25:
+        return img, det
+    if log is not None:
+        suffix = "" if residual is None else f" -> {residual:+.1f}°"
+        log(t(f"  [i] 両目を基準に顔を水平補正: {eye_angle:+.1f}°{suffix}",
+              f"  [i] Auto-levelled face from the eyes: {eye_angle:+.1f}°{suffix}"))
+    return rotated, redetected
+
+
+def apply_preview_adjustment(img, zoom=1.0, offset_x=0, offset_y=0, angle=0.0):
+    """プレビュー画面の倍率・位置・回転を同じ大きさのRGBA画像へ反映する。"""
+    from PIL import Image
+    src = img.convert("RGBA")
+    resampling = getattr(Image, "Resampling", Image)
+    zoom = max(0.70, min(float(zoom), 1.40))
+    angle = max(-15.0, min(float(angle), 15.0))
+    if abs(angle) >= 0.05:
+        src = src.rotate(angle, resample=resampling.BICUBIC, expand=True,
+                         fillcolor=(0, 0, 0, 0))
+    target_w = max(1, int(round(src.width * zoom)))
+    target_h = max(1, int(round(src.height * zoom)))
+    if (target_w, target_h) != src.size:
+        src = src.resize((target_w, target_h), resampling.LANCZOS)
+    canvas = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    left = int(round((canvas.width - src.width) / 2.0 + float(offset_x)))
+    top = int(round((canvas.height - src.height) / 2.0 + float(offset_y)))
+    canvas.alpha_composite(src, (left, top))
+    return canvas
 
 
 # 目をキャンバス上端から何割の位置に置くか。
@@ -774,7 +861,8 @@ def crop_around_face(img, box, size_factor, neck, log=None,
     ・eye_mid_y がボックス内20〜46%にある場合: 目を上から40%に配置（FM標準スタイル）
     ・それ以外フォールバック: 顔ボックス上端を上から25%に配置（ひげ誤検出に強い）
     ・ヘアガード: 顔ボックス上端が最低22%の余白を持つよう保証（安全網）
-    size_factor: キャンバス高さ = 顔高さ × size_factor（目〜顎距離で正規化）"""
+    size_factor: キャンバス高さ = 顔高さ × size_factor（目〜顎距離で正規化）
+    neck: 顎の下に残す余白（キャンバス高さに対する割合）"""
     from PIL import Image
     img = img.convert("RGBA")
     x, y, w, h = box
@@ -853,6 +941,19 @@ def crop_around_face(img, box, size_factor, neck, log=None,
                 top = y - hair_guard
 
         bottom = top + canvas_h
+
+        # 投稿ガイドに合わせ、顎下の余白を必要以上に残さない。
+        # 正方形の大きさは変えず、切り抜き枠全体を上へ移動するので、
+        # 顔サイズの一貫性と頭頂ガードを保ったまま肩の写り込みを減らせる。
+        neck = max(0.01, min(float(neck), 0.20))
+        desired_bottom = chin + canvas_h * neck
+        if bottom > desired_bottom:
+            shift = bottom - desired_bottom
+            top -= shift
+            bottom -= shift
+            if log is not None and shift > canvas_h * 0.01:
+                log(t(f"  [i] 顎下の余白を詰めました: {shift:.0f}px",
+                      f"  [i] Tightened the space below the chin by {shift:.0f}px"))
 
     top = int(round(top))
     side = max(1, int(round(bottom - top)))
@@ -1314,11 +1415,13 @@ def process_one(path, out_path, opts, log):
 
     # --- 1. 顔検出（元画像に対して。背景除去してからでは精度が落ちる）---
     det = detect_face_box(img, log) if opts.get("face_crop", True) else None
+    if det is not None and opts.get("auto_level", True):
+        img, det = straighten_face(img, det, already_cutout, log)
     if det is not None:
-        box, eye_mid_y, eye_mid_x, nose_x = det
+        box, eye_mid_y, eye_mid_x, nose_x, eye_angle = det
         if debug:
-            log(t(f"  [debug] 顔box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x}",
-                  f"  [debug] face box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x}"))
+            log(t(f"  [debug] 顔box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x} angle={eye_angle}",
+                  f"  [debug] face box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x} angle={eye_angle}"))
     elif debug and opts.get("face_crop", True):
         log(t("  [debug] 顔を検出できませんでした（全体を使用）",
               "  [debug] face not detected (using full image)"))
@@ -1350,7 +1453,12 @@ def process_one(path, out_path, opts, log):
 
     preview = opts.get("_preview")
     if preview is not None:
-        decision = preview(img)
+        preview_result = preview(img)
+        decision = preview_result
+        if isinstance(preview_result, tuple):
+            decision, adjusted = preview_result
+            if adjusted is not None:
+                img = adjusted
         if decision == "cancel":
             cancel = opts.get("_cancel")
             if cancel is not None:
@@ -1747,7 +1855,7 @@ def set_titlebar_dark(window, dark=True):
 # 髪の量が多くて枠に収まらない場合は crop_around_face が自動で広げる。
 DEFAULT_FACE_SIZE = 1.37
 FACE_SIZE_MIN, FACE_SIZE_MAX = 0.8, 3.0
-FACE_NECK = 0.10               # 参考値（現バージョンでは直接使用しない）
+FACE_NECK = 0.05               # 顎下に残す余白（キャンバス高さに対する割合）
 # 旧バージョンの設定ファイル（プリセット番号）からの移行用
 LEGACY_ZOOM_TO_SIZE = {0: 1.37, 1: 1.25}
 
@@ -1797,6 +1905,7 @@ class App(tk.Tk):
         self.matting_var = tk.BooleanVar(value=False)
         self.ocr_var = tk.BooleanVar(value=True)
         self.facecrop_var = tk.BooleanVar(value=True)
+        self.auto_level_var = tk.BooleanVar(value=True)
         self.upscale_var = tk.BooleanVar(value=True)
         self.ai_var = tk.BooleanVar(value=False)
         self.bg_var = tk.BooleanVar(value=True)
@@ -1832,6 +1941,7 @@ class App(tk.Tk):
             "fit": self.fit_var.get(), "model": self.model_var.get(),
             "matting": self.matting_var.get(), "ocr": self.ocr_var.get(),
             "facecrop": self.facecrop_var.get(), "upscale": self.upscale_var.get(),
+            "auto_level": self.auto_level_var.get(),
             "ai": self.ai_var.get(), "bg": self.bg_var.get(), "cfg": self.cfg_var.get(),
             "append": self.append_var.get(), "newgen": self.newgen_var.get(),
             "preview": self.preview_var.get(),
@@ -1889,6 +1999,7 @@ class App(tk.Tk):
             ("matting",     self.matting_var),
             ("ocr",         self.ocr_var),
             ("facecrop",    self.facecrop_var),
+            ("auto_level",  self.auto_level_var),
             ("upscale",     self.upscale_var),
             ("ai",          self.ai_var),
             ("bg",          self.bg_var),
@@ -2082,18 +2193,20 @@ class App(tk.Tk):
                         variable=self.ocr_var).grid(row=0, column=0, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("顔を中心に切り抜く", "Crop around face"),
                         variable=self.facecrop_var).grid(row=0, column=1, sticky="w", pady=2)
+        ttk.Checkbutton(chk, text=t("両目を水平に自動補正", "Auto-level eyes"),
+                        variable=self.auto_level_var).grid(row=1, column=1, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("画像を拡大する", "Upscale"),
                         variable=self.upscale_var).grid(row=1, column=0, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("AI高画質化 (Real-ESRGAN)", "AI upscale (Real-ESRGAN)"),
-                        variable=self.ai_var).grid(row=1, column=1, sticky="w", pady=2)
+                        variable=self.ai_var).grid(row=2, column=1, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("背景を消して透過にする", "Remove background (transparent)"),
                         variable=self.bg_var).grid(row=2, column=0, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("保存前にプレビュー", "Preview before saving"),
-                        variable=self.preview_var).grid(row=2, column=1, sticky="w", pady=2)
+                        variable=self.preview_var).grid(row=3, column=1, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("config.xml を作る", "Generate config.xml"),
                         variable=self.cfg_var).grid(row=3, column=0, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("config.xml に書き足す（重複無視）", "Append to config.xml (skip dups)"),
-                        variable=self.append_var).grid(row=3, column=1, sticky="w", pady=2)
+                        variable=self.append_var).grid(row=4, column=1, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("作成済みでも作り直す", "Overwrite existing"),
                         variable=self.ow_var).grid(row=4, column=0, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("生成選手 (newgen) に対応する — ID に r- を付ける",
@@ -2466,205 +2579,6 @@ class App(tk.Tk):
                     f"[i] Copied {added} image(s) into the input folder"))
         return added
 
-    # ---------- 一覧モード（ID割り当て） ----------
-    def _open_id_editor(self, preset=None):
-        """入力フォルダの画像を一覧にして、行ごとにIDを打てるウィンドウを開く。
-        ペアフォルダもIDスクショもOCRも使わずに「画像 -> ID」を決められる。
-        入力内容は入力フォルダの ids.csv に保存され、実行時に自動で使われる。"""
-        base = self.in_var.get()
-        if not base or not Path(base).is_dir():
-            messagebox.showwarning(t("確認", "Notice"),
-                                   t("入力フォルダを先に選んでください。",
-                                     "Please select the input folder first."))
-            return
-        in_dir = Path(base)
-        files = sorted(f for f in in_dir.iterdir() if f.suffix.lower() in SUPPORTED_EXT)
-        if not files:
-            messagebox.showinfo(t("情報", "Info"),
-                                t("入力フォルダに画像がありません。",
-                                  "No images in the input folder."))
-            return
-        if len(files) > ID_EDITOR_MAX_ROWS:
-            if not messagebox.askyesno(
-                    t("確認", "Confirm"),
-                    t(f"画像が {len(files)} 枚あります。先頭 {ID_EDITOR_MAX_ROWS} 枚だけ表示しますか？",
-                      f"There are {len(files)} images. Show only the first {ID_EDITOR_MAX_ROWS}?")):
-                return
-            files = files[:ID_EDITOR_MAX_ROWS]
-
-        existing = read_id_map(in_dir)
-        if preset:
-            existing.update(preset)      # ドロップで作り直したときに入力中の値を引き継ぐ
-        win = tk.Toplevel(self)
-        win.title(t("一覧でIDを割り当てる", "Assign IDs from a list"))
-        win.geometry("640x680")
-        set_titlebar_dark(win, self.mode == "dark")
-        try:
-            win.configure(bg=PALETTES[self.mode]["bg"])
-        except Exception:  # noqa: BLE001
-            pass
-
-        top = ttk.Frame(win, padding=8); top.pack(fill="x")
-        ttk.Button(top, text=t("IDをまとめて貼り付け", "Paste IDs in bulk"),
-                   command=lambda: self._bulk_paste_ids(win)).pack(side="left")
-        ttk.Button(top, text=t("空欄だけクリア", "Clear all"),
-                   command=lambda: [v.set("") for _, v in self._id_rows]).pack(side="left", padx=8)
-        count_lbl = ttk.Label(top, text="", style="Sub.TLabel"); count_lbl.pack(side="right")
-
-        ttk.Label(win, padding=(8, 0),
-                  text=t("FMの選手一覧からIDを縦に並べてコピーし、"
-                         "「IDをまとめて貼り付け」で上から順に流し込めます。",
-                         "Copy IDs as one per line from FM, then use "
-                         "\"Paste IDs in bulk\" to fill the rows top-down."),
-                  style="Sub.TLabel", wraplength=600).pack(fill="x")
-
-        # スクロールできる行リスト
-        wrap = ttk.Frame(win, padding=8); wrap.pack(fill="both", expand=True)
-        canvas = tk.Canvas(wrap, highlightthickness=0, borderwidth=0)
-        try:
-            canvas.configure(bg=PALETTES[self.mode]["bg"])
-        except Exception:  # noqa: BLE001
-            pass
-        vsb = ttk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
-        inner = ttk.Frame(canvas)
-        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y"); canvas.pack(side="left", fill="both", expand=True)
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
-
-        self._id_rows = []          # [(Path, StringVar)]
-        self._id_thumbs = []        # PhotoImage の参照を保持しないとGCで消える
-        thumb_ok = True
-        for i, f in enumerate(files):
-            row = ttk.Frame(inner); row.pack(fill="x", pady=1)
-            if thumb_ok:
-                try:
-                    from PIL import Image as _I, ImageTk as _ITk
-                    im = _I.open(f); im.thumbnail((44, 44), _I.LANCZOS)
-                    ph = _ITk.PhotoImage(im.convert("RGBA"))
-                    self._id_thumbs.append(ph)
-                    ttk.Label(row, image=ph).pack(side="left", padx=(0, 6))
-                except Exception:  # noqa: BLE001
-                    thumb_ok = False       # 1枚失敗したら以降は諦める（Pillow/ImageTk無し等）
-            ttk.Label(row, text=f.name, width=34, anchor="w").pack(side="left")
-            var = tk.StringVar(value=existing.get(f.name, ""))
-            ent = ttk.Entry(row, textvariable=var, width=14)
-            ent.pack(side="left", padx=6)
-            if i == 0:
-                ent.focus_set()
-            self._id_rows.append((f, var))
-
-        def refresh_count(*_a):
-            n = sum(1 for _, v in self._id_rows if v.get().strip())
-            count_lbl.config(text=t(f"{len(self._id_rows)} 件中 {n} 件にID入力済み",
-                                    f"{n} of {len(self._id_rows)} have an ID"))
-        for _, v in self._id_rows:
-            v.trace_add("write", refresh_count)
-        refresh_count()
-
-        def collect():
-            return {f.name: v.get().strip() for f, v in self._id_rows if v.get().strip()}
-
-        def save(and_run=False):
-            mapping = collect()
-            if not mapping:
-                messagebox.showwarning(t("確認", "Notice"),
-                                       t("IDが1件も入力されていません。", "No IDs entered."))
-                return
-            bad = [k for k, v in mapping.items() if not v.isdigit()]
-            if bad and not messagebox.askyesno(
-                    t("確認", "Confirm"),
-                    t(f"数字でないIDが {len(bad)} 件あります（実行時にスキップされます）。続けますか？",
-                      f"{len(bad)} ID(s) are not numeric (they will be skipped). Continue?")):
-                return
-            path = write_id_map(in_dir, mapping)
-            self._log(t(f"[i] 対応表を保存しました: {path}", f"[i] Saved ID map: {path}"))
-            win.destroy()
-            if and_run:
-                self._run()
-            else:
-                messagebox.showinfo(t("完了", "Done"),
-                                    t(f"{len(mapping)} 件を {ID_MAP_FILENAME} に保存しました。\n"
-                                      "「実行」を押すとこの対応表が使われます。",
-                                      f"Saved {len(mapping)} entries to {ID_MAP_FILENAME}.\n"
-                                      "Press Run to use it."))
-
-        def on_drop(event):
-            """一覧に画像をドロップしたら、入力フォルダにコピーして並べ直す。"""
-            dirs, imgs, _o = self._split_dropped(event)
-            incoming = self._incoming_images(in_dir, dirs, imgs)
-            if not incoming:
-                return
-            if not messagebox.askyesno(
-                    t("確認", "Confirm"),
-                    t(f"{len(incoming)} 枚を入力フォルダにコピーして一覧に追加しますか？\n{in_dir}",
-                      f"Copy {len(incoming)} image(s) into the input folder and add them?\n{in_dir}"),
-                    parent=win):
-                return
-            self._copy_into(in_dir, incoming)
-            keep = collect()
-            win.destroy()
-            self._open_id_editor(preset=keep)
-
-        self._register_drop(win, on_drop)
-        if self.dnd_ok:
-            ttk.Label(win, padding=(8, 0), style="Sub.TLabel",
-                      text=t("このウィンドウに画像をドロップすると入力フォルダにコピーして追加します",
-                             "Drop images here to copy them into the input folder")
-                      ).pack(fill="x")
-
-        btm = ttk.Frame(win, padding=8); btm.pack(fill="x")
-        ttk.Button(btm, text=t("保存して実行", "Save and run"), style="Accent.TButton",
-                   command=lambda: save(True)).pack(side="left")
-        ttk.Button(btm, text=t("保存だけ", "Save only"),
-                   command=lambda: save(False)).pack(side="left", padx=8)
-        ttk.Button(btm, text=t("閉じる", "Close"), command=win.destroy).pack(side="right")
-        win.protocol("WM_DELETE_WINDOW", win.destroy)
-
-    def _bulk_paste_ids(self, parent):
-        """IDを改行区切りで貼り付けて、一覧の上から順に流し込む。"""
-        dlg = tk.Toplevel(parent)
-        dlg.title(t("IDをまとめて貼り付け", "Paste IDs in bulk"))
-        dlg.geometry("360x420")
-        dlg.transient(parent); dlg.grab_set()
-        ttk.Label(dlg, padding=8, wraplength=330, style="Sub.TLabel",
-                  text=t("1行に1つIDを貼り付けてください。一覧の上から順に入ります。"
-                         "数字以外の文字が混ざっていても数字だけ拾います。",
-                         "One ID per line. They are filled from the top of the list. "
-                         "Non-digit characters are ignored.")).pack(fill="x")
-        txt = tk.Text(dlg, height=18, wrap="none")
-        txt.pack(fill="both", expand=True, padx=8)
-        txt.focus_set()
-
-        def apply_ids():
-            raw = txt.get("1.0", "end").splitlines()
-            ids = []
-            for line in raw:
-                digits = re.sub(r"[^0-9]", "", line)
-                if digits:
-                    ids.append(digits)
-            if not ids:
-                messagebox.showwarning(t("確認", "Notice"),
-                                       t("IDが見つかりませんでした。", "No IDs found."), parent=dlg)
-                return
-            rows = self._id_rows
-            if len(ids) != len(rows) and not messagebox.askyesno(
-                    t("確認", "Confirm"),
-                    t(f"ID {len(ids)} 件に対して画像は {len(rows)} 枚です。"
-                      f"上から {min(len(ids), len(rows))} 件だけ入れますか？",
-                      f"{len(ids)} IDs vs {len(rows)} images. "
-                      f"Fill only the first {min(len(ids), len(rows))}?"), parent=dlg):
-                return
-            for (_, var), uid in zip(rows, ids):
-                var.set(uid)
-            dlg.destroy()
-
-        bar = ttk.Frame(dlg, padding=8); bar.pack(fill="x")
-        ttk.Button(bar, text=t("流し込む", "Fill"), style="Accent.TButton",
-                   command=apply_ids).pack(side="left")
-        ttk.Button(bar, text=t("キャンセル", "Cancel"), command=dlg.destroy).pack(side="right")
-
     def _delete_source_images(self):
         base = self.in_var.get()
         if not base:
@@ -2807,18 +2721,80 @@ class App(tk.Tk):
         from PIL import Image as _I, ImageTk
         data = base64.b64decode(b64)
         import io as _io
-        img = _I.open(_io.BytesIO(data))
-        photo = ImageTk.PhotoImage(img)
+        img = _I.open(_io.BytesIO(data)).convert("RGBA")
         win = tk.Toplevel(self)
-        win.title(t("プレビュー", "Preview"))
+        win.title(t("プレビュー・微調整", "Preview & adjust"))
         win.grab_set()
-        lbl = ttk.Label(win, image=photo)
-        lbl.image = photo
+        win.resizable(False, False)
+        lbl = ttk.Label(win)
         lbl.pack(padx=12, pady=12)
+
+        zoom_var = tk.DoubleVar(value=100.0)
+        x_var = tk.DoubleVar(value=0.0)
+        y_var = tk.DoubleVar(value=0.0)
+        angle_var = tk.DoubleVar(value=0.0)
+        zoom_text = tk.StringVar()
+        x_text = tk.StringVar()
+        y_text = tk.StringVar()
+        angle_text = tk.StringVar()
+        max_x = max(10, int(img.width * 0.25))
+        max_y = max(10, int(img.height * 0.25))
+
+        def adjusted_image():
+            return apply_preview_adjustment(
+                img, zoom_var.get() / 100.0, x_var.get(), y_var.get(), angle_var.get())
+
+        def render(_value=None):
+            adjusted = adjusted_image()
+            # 通常の180px出力は2倍表示。大きな出力でも画面からはみ出さない。
+            display_scale = min(2.0, 520.0 / adjusted.width, 520.0 / adjusted.height)
+            dw = max(1, int(round(adjusted.width * display_scale)))
+            dh = max(1, int(round(adjusted.height * display_scale)))
+            resampling = getattr(_I, "Resampling", _I)
+            method = resampling.NEAREST if display_scale >= 1.0 else resampling.LANCZOS
+            shown = adjusted.resize((dw, dh), method)
+            photo = ImageTk.PhotoImage(shown)
+            lbl.configure(image=photo)
+            lbl.image = photo
+            zoom_text.set(f"{zoom_var.get():.0f}%")
+            x_text.set(f"{x_var.get():+.0f}px")
+            y_text.set(f"{y_var.get():+.0f}px")
+            angle_text.set(f"{angle_var.get():+.1f}°")
+
+        controls = ttk.LabelFrame(win, text=t("位置と角度", "Position and angle"), padding=8)
+        controls.pack(fill="x", padx=12, pady=(0, 10))
+        controls.columnconfigure(1, weight=1)
+
+        def add_slider(row, label_ja, label_en, variable, start, end, value_text):
+            ttk.Label(controls, text=t(label_ja, label_en), width=9).grid(
+                row=row, column=0, sticky="w", pady=2)
+            ttk.Scale(controls, variable=variable, from_=start, to=end,
+                      command=render, length=300).grid(row=row, column=1, sticky="ew", padx=6)
+            ttk.Label(controls, textvariable=value_text, width=8).grid(
+                row=row, column=2, sticky="e")
+
+        add_slider(0, "拡大率", "Zoom", zoom_var, 70, 140, zoom_text)
+        add_slider(1, "左右", "Left/right", x_var, -max_x, max_x, x_text)
+        add_slider(2, "上下", "Up/down", y_var, -max_y, max_y, y_text)
+        add_slider(3, "回転", "Rotation", angle_var, -15, 15, angle_text)
+
+        def reset_adjustment():
+            zoom_var.set(100.0)
+            x_var.set(0.0)
+            y_var.set(0.0)
+            angle_var.set(0.0)
+            render()
+
+        ttk.Button(controls, text=t("調整をリセット", "Reset adjustments"),
+                   command=reset_adjustment).grid(row=4, column=0, columnspan=3, pady=(6, 0))
         btns = ttk.Frame(win); btns.pack(pady=(0, 12))
 
         def answer(r):
             holder["r"] = r
+            if r in ("save", "all"):
+                out = _io.BytesIO()
+                adjusted_image().save(out, "PNG")
+                holder["image_b64"] = base64.b64encode(out.getvalue()).decode("ascii")
             win.destroy()
             ev.set()
 
@@ -2830,6 +2806,8 @@ class App(tk.Tk):
                    command=lambda: answer("all")).pack(side="left", padx=4)
         ttk.Button(btns, text=t("キャンセル", "Cancel"),
                    command=lambda: answer("cancel")).pack(side="left", padx=4)
+        win.protocol("WM_DELETE_WINDOW", lambda: answer("cancel"))
+        render()
         win.wait_window()
         if not ev.is_set():
             ev.set()
@@ -2910,6 +2888,7 @@ class App(tk.Tk):
                 "scale":         float(self.scale_var.get()),
                 "ocr_id":        self.ocr_var.get(),
                 "face_crop":     self.facecrop_var.get(),
+                "auto_level":    self.auto_level_var.get(),
                 "face_size":     max(FACE_SIZE_MIN,
                                      min(float(self.face_size_var.get()), FACE_SIZE_MAX)),
                 "face_neck":     FACE_NECK,
@@ -2950,9 +2929,8 @@ class App(tk.Tk):
                 if state["all"]:
                     return "save"
                 import base64
-                from PIL import Image as _I
                 buf = io.BytesIO()
-                pil_img.resize((pil_img.width * 2, pil_img.height * 2), _I.NEAREST).save(buf, "PNG")
+                pil_img.save(buf, "PNG")
                 ev = threading.Event()
                 holder = {}
                 self.q.put(("preview", (base64.b64encode(buf.getvalue()).decode("ascii"), ev, holder)))
@@ -2960,10 +2938,18 @@ class App(tk.Tk):
                 if not ev.wait(timeout=600):
                     return "save"
                 r = holder.get("r", "save")
+                adjusted = None
+                adjusted_b64 = holder.get("image_b64")
+                if adjusted_b64:
+                    try:
+                        from PIL import Image as _I
+                        adjusted = _I.open(io.BytesIO(base64.b64decode(adjusted_b64))).convert("RGBA").copy()
+                    except Exception:  # noqa: BLE001
+                        adjusted = None
                 if r == "all":
                     state["all"] = True
-                    return "save"
-                return r
+                    return "save", adjusted
+                return r, adjusted
 
             opts["_preview"] = preview_cb
 

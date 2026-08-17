@@ -1,15 +1,15 @@
-# FM Face Processor v2.0.0
+# FM Face Processor v2.1.0
 
 **顔写真 + IDスクショ → FMポートレート + config.xml を全自動生成**
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/License-MIT-green)](https://github.com/kumajia/FM-Face-Processor/blob/main/LICENSE)
-[![Release](https://img.shields.io/badge/Release-v2.0.0-2ea44f)](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.0.0)
+[![Release](https://img.shields.io/badge/Release-v2.1.0-2ea44f)](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.1.0)
 
 Football Manager 用の選手・スタッフ顔グラフィックを半自動で作るツールです。顔写真とFM内IDのスクショを放り込むだけで、高画質化・背景透過・顔トリミング・`config.xml` 生成までまとめて行います。
 
-v2.0.0では、既存の日本語 / 英語表示とダーク / ライトテーマを維持しつつ、**Python不要のWindows EXE版**と必要なAIモデルを配布ZIPへ同梱しました。
+v2.1.0では、投稿ガイドに合わせて**両目の自動水平補正**と**顎下を詰めたクロップ**を追加しました。保存前プレビューでは、拡大率・位置・角度を1枚ずつ微調整できます。
 
 ---
 
@@ -20,12 +20,13 @@ v2.0.0では、既存の日本語 / 英語表示とダーク / ライトテー�
 | 🔍 顔検出 | YuNet（高精度）+ Haar カスケードでフォールバック |
 | 🖼️ 高画質化 | Real-ESRGAN x4 で拡大 |
 | ✂️ 背景透過 | rembg で透過 PNG 化（モデル選択・髪のフチ調整あり） |
-| 🎯 顔トリミング | 目〜顎の距離で正規化、肩が写らない正方形クロップ |
+| 📐 水平補正 | YuNetの両目ランドマークで傾きを検出し、両目が水平になるよう自動補正 |
+| 🎯 顔トリミング | 目〜顎の距離で正規化し、顎下を詰めて肩を抑えた正方形クロップ |
 | 🔢 ID 自動読取 | RapidOCR でスクショから ID を認識 → `<ID>.png` で保存 |
 | 📄 config.xml 生成 | 実行のたびに追記、重複 ID はスキップ |
 | 👶 newgen 対応 | ID に `r-` プレフィックスを付けるオプション |
 | 🌐 UI | 日本語 / 英語、ダーク / ライト テーマ、設定の保存 |
-| 👁️ 保存前プレビュー | 1枚ずつ確認し、保存・スキップ・キャンセルを選択可能 |
+| 👁️ 保存前プレビュー | 1枚ずつ拡大率・左右・上下・角度を微調整して保存可能 |
 | ☁️ remove.bg API | 任意で使用可能。失敗時はローカルAIへ自動で切り替え |
 | 🛡️ データ保護 | 一時ファイル保存、`config.xml` の自動バックアップ、ごみ箱への移動 |
 
@@ -33,16 +34,16 @@ v2.0.0では、既存の日本語 / 英語表示とダーク / ライトテー�
 
 ## ダウンロードと起動
 
-[Releasesページ](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.0.0)から `FM.Face.Processor_v2.0.0_Windows.zip` をダウンロードして展開してください。
+[Releasesページ](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.1.0)から `FM.Face.Processor_v2.1.0_Windows.zip` をダウンロードして展開してください。
 
 ```
-FM Face Processor_v2.0.0/
+FM Face Processor_v2.1.0/
 ├── EXE/
 │   └── FM Face Processor/
 │       ├── FM Face Processor.exe
 │       └── 必要な実行ファイル・AIモデル一式
 ├── README.md
-└── FM_Face_Processor_仕様書_v2.0.0_Dark.docx
+└── FM_Face_Processor_仕様書_v2.1.0_Dark.docx
 ```
 
 `EXE\FM Face Processor\FM Face Processor.exe` をダブルクリックすれば起動します。**Pythonのインストールは不要**です。
@@ -113,7 +114,8 @@ py -3.12 "FM Face Processor.py"
 | 顔写真とIDの組み合わせが違う | 撮影時刻を確認するか、1人分ずつサブフォルダに分ける |
 | 背景が抜けない | ローカルAIまたはremove.bgを有効にし、処理ログを確認する |
 | remove.bgが使えない | APIキーと通信環境を確認する。失敗時はローカルAIへ自動で切り替わる |
-| 顔が大きすぎる / 切れる | 「顔の大きさ」を小さくする |
+| 顔が大きすぎる / 切れる | 「顔の大きさ」を小さくするか、「保存前にプレビュー」で位置と倍率を調整する |
+| 顔の角度を直したい | 「両目を水平に自動補正」をONにする。必要ならプレビューで角度を微調整する |
 | 高画質化できない | 「AI高画質化（Real-ESRGAN）」をOFFにするか、配布ZIPを展開し直す |
 | EXEが起動しない | ZIPを完全に展開し、EXE単体ではなくフォルダ一式で起動する |
 
@@ -125,24 +127,25 @@ py -3.12 "FM Face Processor.py"
 
 A semi-automatic tool for creating Football Manager player and staff face graphics. Drop in a face photo and an in-game ID screenshot, and the app can upscale the image, remove its background, crop the face, and generate `config.xml`.
 
-Version 2.0.0 includes a **ready-to-run Windows EXE** and the required AI models in the release ZIP. The app supports English / Japanese and dark / light themes.
+Version 2.1.0 adds **automatic eye levelling**, a **tighter chin crop**, and per-image zoom, position, and rotation controls in the save preview.
 
 ### Features
 
 - Face detection with YuNet and Haar fallback
+- Automatic eye levelling using YuNet landmarks
 - Optional 4× upscaling via Real-ESRGAN
 - Transparent PNG background removal using local AI (rembg) or the remove.bg API
-- Normalized square crop based on eye-to-chin distance
+- Normalized square crop based on eye-to-chin distance with tighter space below the chin
 - OCR-based ID reading with RapidOCR → saves as `<ID>.png`
 - Automatic `config.xml` generation with append and duplicate-skip support
 - Newgen support with the `r-` prefix option
-- Preview before saving
+- Preview with per-image zoom, position, and rotation adjustment before saving
 - English / Japanese UI, dark / light themes, and persistent settings
 - Safer saving, `config.xml` backups, and recoverable Recycle Bin cleanup
 
 ### Download and launch
 
-Download `FM.Face.Processor_v2.0.0_Windows.zip` from the [v2.0.0 release page](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.0.0), then extract the ZIP.
+Download `FM.Face.Processor_v2.1.0_Windows.zip` from the [v2.1.0 release page](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.1.0), then extract the ZIP.
 
 Run:
 
@@ -204,6 +207,7 @@ An internet connection is required when preparing the libraries and the first ti
 | Background is not removed | Enable local AI or remove.bg and check the processing log |
 | remove.bg is unavailable | Check the API key and connection; the app automatically falls back to local AI |
 | Face is too large / cut off | Lower the **Face size** setting |
+| Face is tilted | Enable **Auto-level eyes**, then fine-tune the angle in the preview if needed |
 | Upscaling fails | Turn off **AI upscale (Real-ESRGAN)** or extract the release ZIP again |
 | EXE does not start | Fully extract the ZIP and launch it with the complete folder intact |
 
@@ -213,4 +217,4 @@ An internet connection is required when preparing the libraries and the first ti
 
 [Releasesページ / Releases](https://github.com/kumajia/FM-Face-Processor/releases)をご覧ください。
 
-バージョン / Version: v2.0.0
+バージョン / Version: v2.1.0
