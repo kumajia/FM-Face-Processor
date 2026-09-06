@@ -55,7 +55,9 @@ except Exception:  # noqa: BLE001
     HAS_DND = False
 
 SUPPORTED_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
-APP_VERSION = "v2.1.0"
+APP_VERSION = "v2.2.0"
+APP_ICON_FILENAME = "fm_face_processor.ico"
+APP_USER_MODEL_ID = "kumajia.FMFaceProcessor"
 # 「ID」に続く数字（FMのperson ID）を拾う
 # FMのperson IDは5桁以上。2桁以上を拾うと "Real Madrid 2024 Unique ID 1928374651"
 # のような文字列で年号や背番号を先に拾ってしまうため下限を上げてある。
@@ -73,6 +75,25 @@ def set_lang(lang):
 def t(ja, en):
     """現在の言語に応じて日本語か英語を返す。"""
     return en if _LANG == "en" else ja
+
+
+def resource_path(filename):
+    """開発時とPyInstaller版の両方で同梱ファイルを見つける。"""
+    roots = []
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        roots.append(Path(bundle_root))
+    try:
+        source_root = Path(__file__).resolve().parent
+        roots.extend((source_root / "assets", source_root))
+    except Exception:  # noqa: BLE001
+        pass
+    roots.append(Path.cwd())
+    for root in roots:
+        candidate = root / filename
+        if candidate.exists():
+            return candidate
+    return None
 
 
 # ==========================================================================
@@ -239,6 +260,10 @@ def upscale(img, factor, model_name, use_ai, log):
 _rembg_sessions = {}
 _rembg_lock = threading.Lock()
 
+
+class BackgroundRemovalError(RuntimeError):
+    """背景除去を安全に完了できず、出力を保存してはいけない状態。"""
+
 # ----- 低負荷モード（他のアプリにCPUを譲る）-----
 _LOW_POWER = False
 
@@ -293,13 +318,93 @@ def is_already_cutout(img, min_ratio=0.05):
         alpha = img.getchannel("A")
         if alpha.getextrema()[0] > 250:      # 完全不透明＝ただのRGBA画像
             return False
-        transparent = sum(alpha.histogram()[:8])
-        return transparent > img.width * img.height * float(min_ratio)
+        hist = alpha.histogram()
+        total = img.width * img.height
+        transparent = sum(hist[:8])
+        opaque = sum(hist[248:])
+        if transparent <= total * float(min_ratio) or opaque <= total * 0.05:
+            return False
+
+        # 透明な外枠や角丸だけの通常写真を「切り抜き済み」と誤認しない。
+        # 本物の人物切り抜きなら、不透明部分の外接矩形の内側にも、髪・首・肩の
+        # シルエットに沿った透明部分が存在する。
+        solid = alpha.point(lambda value: 255 if value >= 128 else 0)
+        bbox = solid.getbbox()
+        if bbox is None:
+            return False
+        enclosed = alpha.crop(bbox)
+        enclosed_total = enclosed.width * enclosed.height
+        enclosed_transparent = sum(enclosed.histogram()[:8])
+        return enclosed_transparent > enclosed_total * 0.005
     except Exception:  # noqa: BLE001
         return False
 
 
-def remove_background(img, model_name, alpha_matting=False, log=None, removebg_key=None):
+def _removebg_mask_is_incomplete(img, face_box=None):
+    """remove.bgが背景をほぼ残した場合を検出し、理由も返す。"""
+    try:
+        import numpy as np
+        alpha = np.asarray(img.convert("RGBA").getchannel("A"), dtype=np.uint8)
+        height, width = alpha.shape
+        transparent_ratio = float((alpha <= 8).mean())
+        opaque_ratio = float((alpha >= 248).mean())
+
+        face_area_ratio = None
+        face_opaque_ratio = None
+        far_background_ratio = None
+        if face_box is not None:
+            x, y, w, h = (int(round(v)) for v in face_box)
+            x0, y0 = max(0, x), max(0, y)
+            x1, y1 = min(width, x + max(1, w)), min(height, y + max(1, h))
+            if x1 > x0 and y1 > y0:
+                face_area_ratio = ((x1 - x0) * (y1 - y0)) / float(width * height)
+                face_opaque_ratio = float((alpha[y0:y1, x0:x1] >= 128).mean())
+
+                # 顔から十分離れた場所は、人物写真ならほぼ背景のはず。
+                # 回転でできた上端の透明三角だけではここを通過できないよう、
+                # 顔・首・上半身が入り得る広めの長方形の「外側」を確認する。
+                near_x0 = max(0, int(round(x - 2.5 * w)))
+                near_x1 = min(width, int(round(x + 3.5 * w)))
+                near_y0 = max(0, int(round(y - 1.25 * h)))
+                near_y1 = min(height, int(round(y + 5.0 * h)))
+                far_mask = np.ones((height, width), dtype=bool)
+                far_mask[near_y0:near_y1, near_x0:near_x1] = False
+                far_count = int(far_mask.sum())
+                if far_count >= width * height * 0.08:
+                    far_background_ratio = float((alpha[far_mask] <= 32).mean())
+
+        # 顔そのものが大きく消えていれば、背景量に関係なく不完全。
+        if face_opaque_ratio is not None and face_opaque_ratio < 0.70:
+            return True, t(
+                f"顔領域の保持率が低い（{face_opaque_ratio:.0%}）",
+                f"low face retention ({face_opaque_ratio:.0%})")
+
+        # 顔が画像の一部しか占めない素材なのに、ほぼ全体が不透明なら
+        # ポスター背景などを人物とまとめて残した可能性が高い。
+        small_face = face_area_ratio is None or face_area_ratio < 0.20
+        if small_face and far_background_ratio is not None and far_background_ratio < 0.35:
+            return True, t(
+                f"顔から離れた背景が残っている（透明 {far_background_ratio:.1%}）",
+                f"distant background remains ({far_background_ratio:.1%} transparent)")
+
+        if small_face and transparent_ratio < 0.05 and opaque_ratio > 0.85:
+            return True, t(
+                f"透明部分が少なすぎる（{transparent_ratio:.1%}）",
+                f"too little transparency ({transparent_ratio:.1%})")
+
+        # 回転で生じた細い透明三角だけを「背景除去成功」と誤認しない。
+        if small_face and transparent_ratio < 0.025:
+            return True, t(
+                f"背景がほぼ残っている（透明 {transparent_ratio:.1%}）",
+                f"background mostly remains ({transparent_ratio:.1%} transparent)")
+
+        return False, ""
+    except Exception:  # noqa: BLE001
+        return False, ""
+
+
+def remove_background(img, model_name, alpha_matting=False, log=None, removebg_key=None,
+                      face_box=None):
     """背景除去。remove.bg のAPIキーがあればそちらを優先（髪の品質が高い）。
     失敗時やキー無しはローカルAIで処理。メモリ不足時は軽量モデルで再試行。"""
     if removebg_key:
@@ -329,9 +434,26 @@ def remove_background(img, model_name, alpha_matting=False, log=None, removebg_k
                 out = work
             # サイズが同じで返ってきた場合も同じ後処理を通す（小さい入力だけ品質が変わるのを防ぐ）
             out = _defringe(out, src=img)
+            incomplete, reason = _removebg_mask_is_incomplete(out, face_box)
+            if incomplete:
+                if log:
+                    log(t(f"  [i] remove.bgの切り抜きが不完全なため、ローカルAIで再処理します: {reason}",
+                          f"  [i] remove.bg cutout was incomplete; retrying with local AI: {reason}"))
+                try:
+                    return _remove_background_once(img, model_name, alpha_matting)
+                except Exception as local_error:  # noqa: BLE001
+                    message = t(
+                        f"remove.bgとローカルAIの両方で背景除去に失敗しました: {local_error}",
+                        f"Both remove.bg and local AI background removal failed: {local_error}")
+                    if log:
+                        log(t(f"  [!] {message}（この画像は保存しません）",
+                              f"  [!] {message} (this image will not be saved)"))
+                    raise BackgroundRemovalError(message) from local_error
             if log:
                 log(t("  [i] remove.bg で背景を除去しました", "  [i] Background removed via remove.bg"))
             return out
+        except BackgroundRemovalError:
+            raise
         except Exception as e:  # noqa: BLE001
             if log:
                 log(t(f"  [i] remove.bg が使えませんでした（ローカルAIで続行）: {e}",
@@ -579,11 +701,12 @@ def _get_yunet(log):
 
 
 def detect_face_box_yunet(img, log):
-    """YuNetで顔を検出し、顔box・目/鼻座標・両目の傾きを返す。
+    """YuNetで顔を検出し、顔box・目/鼻/口座標・両目の傾きを返す。
 
-    戻り値は ``(box, eye_mid_y, eye_mid_x, nose_x, eye_angle)``。
+    戻り値は ``(box, eye_mid_y, eye_mid_x, nose_x, eye_angle, mouth_mid_y)``。
     eye_angle は画像の水平線に対する両目の角度（度）で、ランドマークを
-    取得できない場合は None。v2.1.0ではこの角度を自動水平補正に使う。
+    取得できない場合は None。mouth_mid_y は顔boxが顎を浅く検出したときの
+    顎位置補正に使う。
     """
     det = _get_yunet(log)
     if det is None:
@@ -618,6 +741,7 @@ def detect_face_box_yunet(img, log):
         eye_mid_x = None  # 目の水平中点（横ズレ補正用）
         nose_x = None     # 鼻のx座標（目が使えない時の横ズレ補正フォールバック）
         eye_angle = None  # 両目を結ぶ線の角度。傾き補正に使用
+        mouth_mid_y = None  # 口角のy中点。顎位置の過小検出を補正する
         if len(best) >= 10:
             try:
                 right_eye_x, right_eye_y = float(best[4]), float(best[5])
@@ -633,6 +757,11 @@ def detect_face_box_yunet(img, log):
                         eye_angle = candidate
             except Exception:
                 pass
+            if len(best) >= 14:
+                try:
+                    mouth_mid_y = (float(best[11]) + float(best[13])) / 2.0
+                except Exception:
+                    pass
         elif len(best) >= 8:
             try:
                 eye_mid_x = (float(best[4]) + float(best[6])) / 2.0
@@ -640,7 +769,7 @@ def detect_face_box_yunet(img, log):
             except Exception:
                 pass
         return ((int(round(bx)), int(round(by)), int(round(bw)), int(round(bh))),
-                eye_mid_y, eye_mid_x, nose_x, eye_angle)
+                eye_mid_y, eye_mid_x, nose_x, eye_angle, mouth_mid_y)
     except Exception:
         return None
 
@@ -666,7 +795,7 @@ def _get_face_cascade_alt():
 
 
 def detect_face_box(img, log):
-    """顔を検出し ``(box, eye_y, eye_x, nose_x, eye_angle)`` を返す。
+    """顔を検出し ``(box, eye_y, eye_x, nose_x, eye_angle, mouth_y)`` を返す。
     YuNet（同梱 .onnx）を優先し、使えない場合は Haar にフォールバックする。"""
     try:
         import cv2  # noqa: F401
@@ -719,7 +848,8 @@ def detect_face_box(img, log):
         # 検出用に拡大していた場合は座標を元のスケールへ戻す
         if det_scale != 1.0:
             x, y, w, h = (x / det_scale, y / det_scale, w / det_scale, h / det_scale)
-        return (int(round(x)), int(round(y)), int(round(w)), int(round(h))), None, None, None, None
+        return ((int(round(x)), int(round(y)), int(round(w)), int(round(h))),
+                None, None, None, None, None)
     except Exception as e:  # noqa: BLE001
         log(t(f"  [i] 顔検出に失敗（全体を使用）: {e}", f"  [i] Face detection failed (using whole image): {e}"))
         return None
@@ -776,10 +906,114 @@ def straighten_face(img, det, already_cutout, log=None):
     return rotated, redetected
 
 
-def apply_preview_adjustment(img, zoom=1.0, offset_x=0, offset_y=0, angle=0.0):
-    """プレビュー画面の倍率・位置・回転を同じ大きさのRGBA画像へ反映する。"""
+def _estimate_neck_band(img, chin_y=None):
+    """透過シルエットから「顎下〜襟」の縦圧縮可能な帯を推定する。
+
+    顔検出から渡された顎位置より下だけを探索し、襟・肩の広がりを探す。
+    顎位置または襟を確実に得られない画像は変形しないため None を返す。
+    """
+    try:
+        import numpy as np
+        alpha = np.asarray(img.convert("RGBA"))[..., 3]
+        if alpha.size == 0 or int(alpha.min()) > 250 or chin_y is None:
+            return None
+        h, w = alpha.shape
+        chin_y = float(chin_y)
+        if not 0 <= chin_y < h - 6:
+            return None
+        widths = (alpha > 40).sum(axis=1).astype(float)
+        smooth = np.convolve(np.pad(widths, (2, 2), mode="edge"),
+                             np.ones(5, dtype=float) / 5.0, mode="valid")
+        # 顎・口を絶対に圧縮帯へ含めない。出力180pxなら約3pxの保護余白。
+        neck_top = max(0, int(round(chin_y + max(2.0, h * 0.015))))
+        search_top = max(neck_top, int(round(h * 0.50)))
+        search_bottom = h
+        if search_bottom - search_top < 8:
+            return None
+        neck_end = search_bottom
+        neck_slice = smooth[search_top:neck_end]
+        minimum_width = max(3.0, w * 0.06)
+        valid_rows = np.nonzero(neck_slice > minimum_width)[0]
+        if valid_rows.size < 5:
+            return None
+        weighted = np.where(neck_slice > minimum_width, neck_slice, np.inf)
+        neck_center = search_top + int(np.argmin(weighted))
+        neck_width = float(smooth[neck_center])
+        if not np.isfinite(neck_width):
+            return None
+
+        # 首より明確に横へ広がる行だけを襟・肩とみなす。
+        widening = max(neck_width * 1.40, w * 0.28)
+        shoulder_y = None
+        for row in range(neck_center + 1, search_bottom - 2):
+            if all(smooth[row:row + 3] >= widening):
+                shoulder_y = row
+                break
+        if shoulder_y is None:
+            # 襟が画角外でも、顎より下に十分な首が残っていれば末端までを圧縮する。
+            # 顎座標が保護境界なので、口や下顎が巻き込まれることはない。
+            occupied = np.nonzero(smooth[search_top:] > minimum_width)[0]
+            if occupied.size == 0:
+                return None
+            shoulder_y = min(h, search_top + int(occupied[-1]) + 1)
+        shoulder_y = int(min(shoulder_y, h))
+        if shoulder_y - neck_top < max(6, h * 0.035):
+            return None
+        return neck_top, shoulder_y
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def neck_shortening_limit(img, chin_y=None):
+    """画像を不自然にしない首短縮量の上限（出力px）を返す。"""
+    band = _estimate_neck_band(img, chin_y)
+    if band is None:
+        return 0
+    neck_top, shoulder_y = band
+    return max(1, int(round(min((shoulder_y - neck_top) * 0.15,
+                                img.height * 0.055))))
+
+
+def apply_neck_shortening(img, amount=0, chin_y=None):
+    """顎下〜襟の帯だけを縦圧縮し、顔を変えずに首を自然に短くする。
+
+    amount は出力画像上のピクセル数。検出した首長の15%か画像高の5.5%を
+    上限とする。襟を検出できない場合は、透明シルエットの末端を下端に使う。
+    """
     from PIL import Image
     src = img.convert("RGBA")
+    amount = max(0, int(round(float(amount))))
+    if amount <= 0:
+        return src.copy()
+    band = _estimate_neck_band(src, chin_y)
+    if band is None:
+        return src.copy()
+    neck_top, shoulder_y = band
+    amount = min(amount, neck_shortening_limit(src, chin_y))
+    if amount <= 0:
+        return src.copy()
+    band_height = shoulder_y - neck_top
+    compressed_height = band_height - amount
+    if compressed_height < 4:
+        return src.copy()
+
+    resampling = getattr(Image, "Resampling", Image)
+    head = src.crop((0, 0, src.width, neck_top))
+    neck = src.crop((0, neck_top, src.width, shoulder_y))
+    body = src.crop((0, shoulder_y, src.width, src.height))
+    neck = neck.resize((src.width, compressed_height), resampling.LANCZOS)
+    result = Image.new("RGBA", src.size, (0, 0, 0, 0))
+    result.alpha_composite(head, (0, 0))
+    result.alpha_composite(neck, (0, neck_top))
+    result.alpha_composite(body, (0, shoulder_y - amount))
+    return result
+
+
+def apply_preview_adjustment(img, zoom=1.0, offset_x=0, offset_y=0, angle=0.0,
+                             neck_shorten=0, chin_y=None):
+    """プレビュー画面の倍率・位置・回転・首短縮を同じ大きさのRGBA画像へ反映する。"""
+    from PIL import Image
+    src = apply_neck_shortening(img, neck_shorten, chin_y)
     resampling = getattr(Image, "Resampling", Image)
     zoom = max(0.70, min(float(zoom), 1.40))
     angle = max(-15.0, min(float(angle), 15.0))
@@ -797,13 +1031,61 @@ def apply_preview_adjustment(img, zoom=1.0, offset_x=0, offset_y=0, angle=0.0):
     return canvas
 
 
+def make_crop_frame_preview(img, mode="dark", max_display=520, padding=24):
+    """保存される正方形の境界を、テーマに合わせた実線枠で表示する。
+
+    プレビュー用だけの画像を返すため、保存される PNG 自体には枠を描かない。
+    枠外をテーマ色で暗く（ライト時は明るく）分け、透過部分は市松模様にする。
+    """
+    from PIL import Image, ImageDraw
+    src = img.convert("RGBA")
+    display_scale = min(2.0, float(max_display) / src.width, float(max_display) / src.height)
+    dw = max(1, int(round(src.width * display_scale)))
+    dh = max(1, int(round(src.height * display_scale)))
+    resampling = getattr(Image, "Resampling", Image)
+    method = resampling.NEAREST if display_scale >= 1.0 else resampling.LANCZOS
+    src = src.resize((dw, dh), method)
+
+    dark = mode == "dark"
+    outside = (21, 21, 23, 255) if dark else (238, 238, 240, 255)
+    check_a = (62, 62, 66, 255) if dark else (210, 210, 214, 255)
+    check_b = (82, 82, 87, 255) if dark else (235, 235, 238, 255)
+    main = (255, 255, 255, 255) if dark else (0, 0, 0, 255)
+    shadow = (0, 0, 0, 255) if dark else (255, 255, 255, 255)
+
+    pad = max(10, int(padding))
+    canvas = Image.new("RGBA", (dw + pad * 2, dh + pad * 2), outside)
+    checker = Image.new("RGBA", (dw, dh), check_a)
+    draw_checker = ImageDraw.Draw(checker)
+    tile = max(8, int(round(10 * display_scale)))
+    for y in range(0, dh, tile):
+        for x in range(0, dw, tile):
+            if (x // tile + y // tile) % 2:
+                draw_checker.rectangle((x, y, min(x + tile - 1, dw - 1),
+                                        min(y + tile - 1, dh - 1)), fill=check_b)
+    checker.alpha_composite(src)
+    canvas.alpha_composite(checker, (pad, pad))
+
+    draw = ImageDraw.Draw(canvas)
+    boundary = (pad, pad, pad + dw - 1, pad + dh - 1)
+    # まず反対色を太く描き、その上へ2pxの主線を重ねて背景を問わず見えるようにする。
+    draw.rectangle(boundary, outline=shadow, width=4)
+    inner = (pad + 1, pad + 1, pad + dw - 2, pad + dh - 2)
+    draw.rectangle(inner, outline=main, width=2)
+    return canvas
+
+
 # 目をキャンバス上端から何割の位置に置くか。
 # 既存FMフェイスパック（180px版24枚）の実測中央値が 49.4% だったため 0.49。
 EYE_RATIO = 0.49
 
+# 目→口の距離に対する口→顎の推定比率。顔boxが顎を浅く取った時だけ使う。
+# 大きすぎる補正は crop_around_face 側で元box高さの25%までに制限する。
+MOUTH_TO_CHIN_RATIO = 0.85
+
 # 髪の上端に最低限確保する余白（キャンバス高さに対する割合）。
-# 参考パックの頭頂余白は 0〜2% だったので 0.02。
-CROWN_MARGIN = 0.02
+# 投稿ガイドの完成例に合わせ、頭頂を上端から約5%に配置する。
+CROWN_MARGIN = 0.05
 
 
 def _silhouette_top_y(img, x_lo, x_hi):
@@ -823,6 +1105,39 @@ def _silhouette_top_y(img, x_lo, x_hi):
         if rows.size == 0:
             return None
         return float(rows.min())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _silhouette_collar_y(img, chin_y, face_cx, face_w, face_h):
+    """背景除去済みの元画像から、襟・肩が首より広がり始めるy座標を探す。"""
+    try:
+        import numpy as np
+        alpha = np.asarray(img.convert("RGBA"))[..., 3]
+        if alpha.size == 0 or int(alpha.min()) > 250:
+            return None
+        h, w = alpha.shape
+        lo = max(0, int(round(face_cx - face_w * 1.8)))
+        hi = min(w, int(round(face_cx + face_w * 1.8)) + 1)
+        start = max(0, int(round(chin_y + max(2.0, face_h * 0.02))))
+        end = min(h, int(round(chin_y + face_h * 1.25)))
+        if hi - lo < 8 or end - start < 8:
+            return None
+        widths = (alpha[start:end, lo:hi] > 40).sum(axis=1).astype(float)
+        smooth = np.convolve(np.pad(widths, (2, 2), mode="edge"),
+                             np.ones(5, dtype=float) / 5.0, mode="valid")
+        minimum = max(3.0, face_w * 0.06)
+        neck_search_end = min(len(smooth), max(5, int(round(face_h * 0.55))))
+        valid = np.nonzero(smooth[:neck_search_end] > minimum)[0]
+        if valid.size < 5:
+            return None
+        narrow_index = int(valid[np.argmin(smooth[valid])])
+        neck_width = float(smooth[narrow_index])
+        widening = max(neck_width * 1.38, face_w * 0.48)
+        for row in range(narrow_index + 1, len(smooth) - 2):
+            if all(smooth[row:row + 3] >= widening):
+                return float(start + row)
+        return None
     except Exception:  # noqa: BLE001
         return None
 
@@ -856,7 +1171,8 @@ def _silhouette_center_x(img, top, bottom, x_lo=None, x_hi=None):
 
 
 def crop_around_face(img, box, size_factor, neck, log=None,
-                     eye_mid_y=None, eye_mid_x=None, nose_x=None):
+                     eye_mid_y=None, eye_mid_x=None, nose_x=None,
+                     mouth_mid_y=None, return_meta=False):
     """顔の高さを基準に正方形クロップ。
     ・eye_mid_y がボックス内20〜46%にある場合: 目を上から40%に配置（FM標準スタイル）
     ・それ以外フォールバック: 顔ボックス上端を上から25%に配置（ひげ誤検出に強い）
@@ -881,6 +1197,21 @@ def crop_around_face(img, box, size_factor, neck, log=None,
           and x + w * 0.15 <= nose_x <= x + w * 0.85):
         cx = nose_x
     chin = y + h
+    # YuNetの顔boxは、AI拡大画像や細長い顔で顎を浅く取ることがある。
+    # 口角はbox下端より安定しているので、目→口の距離から顎を推定し、
+    # box下端より下になる場合だけ安全側へ補正する。
+    if eye_mid_y is not None and mouth_mid_y is not None:
+        eye_to_mouth = mouth_mid_y - eye_mid_y
+        valid_mouth = (h * 0.15 <= eye_to_mouth <= h * 0.60
+                       and y + h * 0.45 <= mouth_mid_y <= y + h * 1.05)
+        if valid_mouth:
+            estimated_chin = mouth_mid_y + eye_to_mouth * MOUTH_TO_CHIN_RATIO
+            estimated_chin = min(estimated_chin, y + h * 1.25)
+            if estimated_chin > chin:
+                if log is not None and estimated_chin - chin > h * 0.02:
+                    log(t(f"  [i] 口の位置から顎を補正: {chin:.0f} -> {estimated_chin:.0f}px",
+                          f"  [i] Corrected chin from mouth landmarks: {chin:.0f} -> {estimated_chin:.0f}px"))
+                chin = estimated_chin
     canvas_h = size_factor * h
 
     if False:  # (removed)
@@ -942,11 +1273,33 @@ def crop_around_face(img, box, size_factor, neck, log=None,
 
         bottom = top + canvas_h
 
+        # 長い首の素材でも襟に届く前に切らない。背景除去済みの元画像で
+        # 首が横へ広がる位置を探し、必要な場合だけキャンバスを下方向へ拡張する。
+        collar_required_bottom = None
+        collar_y = _silhouette_collar_y(img, chin, x + w / 2.0, w, h)
+        if collar_y is not None:
+            # 襟の開始線だけでは完成画像で数pxしか見えず「首だけ」に見える。
+            # 顔高さの18%ぶん襟を見せ、肩を入れすぎない深さまで確保する。
+            collar_required_bottom = collar_y + max(2.0, canvas_h * 0.025,
+                                                     h * 0.18)
+            # 長い首でも襟の最初の数pxは必ず見せる。拡大上限は55%。
+            max_bottom = bottom + canvas_h * 0.55
+            collar_required_bottom = min(collar_required_bottom, max_bottom)
+            if collar_required_bottom > bottom:
+                old_h = canvas_h
+                bottom = collar_required_bottom
+                canvas_h = bottom - top
+                if log is not None:
+                    log(t(f"  [i] 襟を残すためキャンバスを拡大: {old_h:.0f} -> {canvas_h:.0f}px",
+                          f"  [i] Enlarging canvas to retain the collar: {old_h:.0f} -> {canvas_h:.0f}px"))
+
         # 投稿ガイドに合わせ、顎下の余白を必要以上に残さない。
         # 正方形の大きさは変えず、切り抜き枠全体を上へ移動するので、
         # 顔サイズの一貫性と頭頂ガードを保ったまま肩の写り込みを減らせる。
         neck = max(0.01, min(float(neck), 0.20))
         desired_bottom = chin + canvas_h * neck
+        if collar_required_bottom is not None:
+            desired_bottom = max(desired_bottom, collar_required_bottom)
         if bottom > desired_bottom:
             shift = bottom - desired_bottom
             top -= shift
@@ -970,6 +1323,9 @@ def crop_around_face(img, box, size_factor, neck, log=None,
     left = int(round(cx - side / 2.0))
     canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
     canvas.paste(img, (-left, -top))
+    if return_meta:
+        chin_ratio = max(0.0, min(1.0, (float(chin) - top) / side))
+        return canvas, {"chin_ratio": chin_ratio}
     return canvas
 
 
@@ -1195,6 +1551,27 @@ def send_to_trash(path):
                          "Could not move to Recycle Bin (send2trash not installed)"))
 
 
+def _source_image_delete_targets(input_dir, output_dir=None):
+    """ペアフォルダ内の元画像だけを列挙し、出力フォルダは必ず除外する。"""
+    base = Path(input_dir)
+    try:
+        output_resolved = Path(output_dir).resolve() if output_dir else None
+    except OSError:
+        output_resolved = Path(output_dir) if output_dir else None
+    targets = []
+    for sub in sorted(d for d in base.iterdir() if d.is_dir()):
+        try:
+            if output_resolved is not None and sub.resolve() == output_resolved:
+                continue
+        except OSError:
+            if output_resolved is not None and sub == output_resolved:
+                continue
+        targets.extend(
+            f for f in sub.iterdir()
+            if f.is_file() and f.suffix.lower() in SUPPORTED_EXT)
+    return targets
+
+
 
 # config.xml のレコード解析
 RECORD_RE = re.compile(r'<record\s+[^>]*?/>')
@@ -1418,10 +1795,10 @@ def process_one(path, out_path, opts, log):
     if det is not None and opts.get("auto_level", True):
         img, det = straighten_face(img, det, already_cutout, log)
     if det is not None:
-        box, eye_mid_y, eye_mid_x, nose_x, eye_angle = det
+        box, eye_mid_y, eye_mid_x, nose_x, eye_angle, mouth_mid_y = det
         if debug:
-            log(t(f"  [debug] 顔box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x} angle={eye_angle}",
-                  f"  [debug] face box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x} angle={eye_angle}"))
+            log(t(f"  [debug] 顔box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x} mouth_y={mouth_mid_y} angle={eye_angle}",
+                  f"  [debug] face box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x} mouth_y={mouth_mid_y} angle={eye_angle}"))
     elif debug and opts.get("face_crop", True):
         log(t("  [debug] 顔を検出できませんでした（全体を使用）",
               "  [debug] face not detected (using full image)"))
@@ -1436,12 +1813,16 @@ def process_one(path, out_path, opts, log):
         else:
             img = remove_background(img, opts.get("rembg_model", "isnet-general-use"),
                                     alpha_matting=opts.get("alpha_matting", False), log=log,
-                                    removebg_key=opts.get("removebg_key"))
+                                    removebg_key=opts.get("removebg_key"),
+                                    face_box=det[0] if det is not None else None)
 
     # --- 3. 顔トリミング（ここで透過が使えるのでシルエット基準の水平補正が効く）---
+    crop_meta = {}
     if det is not None:
-        img = crop_around_face(img, box, opts.get("face_size", 1.37), opts.get("face_neck", 0.10),
-                               log=log, eye_mid_y=eye_mid_y, eye_mid_x=eye_mid_x, nose_x=nose_x)
+        img, crop_meta = crop_around_face(
+            img, box, opts.get("face_size", 1.37), opts.get("face_neck", FACE_NECK),
+            log=log, eye_mid_y=eye_mid_y, eye_mid_x=eye_mid_x,
+            nose_x=nose_x, mouth_mid_y=mouth_mid_y, return_meta=True)
 
     # --- 4. アップスケール（切り抜き後なので小さく済む）---
     if opts.get("upscale", True):
@@ -1450,6 +1831,8 @@ def process_one(path, out_path, opts, log):
                       opts.get("ai_upscale", False), log)
 
     img = fit_to_size(img, int(opts.get("size", 180)), opts.get("fit", "contain"))
+    if "chin_ratio" in crop_meta:
+        img.info["fm_chin_ratio"] = crop_meta["chin_ratio"]
 
     preview = opts.get("_preview")
     if preview is not None:
@@ -1460,11 +1843,15 @@ def process_one(path, out_path, opts, log):
             if adjusted is not None:
                 img = adjusted
         if decision == "cancel":
+            log(t("  [i] プレビューでキャンセルされたため、保存しませんでした",
+                  "  [i] Preview was cancelled; the image was not saved"))
             cancel = opts.get("_cancel")
             if cancel is not None:
                 cancel.set()
             return False
         if decision == "skip":
+            log(t("  [i] プレビューでスキップされたため、保存しませんでした",
+                  "  [i] Skipped in preview; the image was not saved"))
             return False
 
     _atomic_save_png(img, out_path)
@@ -1621,8 +2008,9 @@ def _run_subfolder_mode(subdirs, out_dir, opts, log, progress):
         for item in enumerate(pairs, 1):
             if cancel and cancel.is_set(): break
             _process(item)
+    cancelled = bool(cancel and cancel.is_set())
     if progress:
-        progress(total, total)
+        progress(done[0], total) if cancelled else progress(total, total)
     _finish(uids, out_dir, opts, log)
 
 
@@ -1690,8 +2078,9 @@ def _run_uid_list(files, uid_list, out_dir, opts, log, progress, require_digits=
         for item in enumerate(items, 1):
             if cancel and cancel.is_set(): break
             _process(item)
+    cancelled = bool(cancel and cancel.is_set())
     if progress:
-        progress(total, total)
+        progress(done[0], total) if cancelled else progress(total, total)
     _finish(uids, out_dir, opts, log)
 
 
@@ -1785,13 +2174,21 @@ def _run_ocr_mode(files, out_dir, opts, log, progress):
         for item in enumerate(pairs, 1):
             if cancel and cancel.is_set(): break
             _process(item)
+    cancelled = bool(cancel and cancel.is_set())
     if progress:
-        progress(total, total)
+        progress(done[0], total) if cancelled else progress(total, total)
     _finish(uids, out_dir, opts, log)
 
 
 def _finish(uids, out_dir, opts, log):
-    log(t(f"\n完了: {len(uids)} 件を出力 -> {out_dir}", f"\nDone: exported {len(uids)} file(s) -> {out_dir}"))
+    cancel = opts.get("_cancel")
+    cancelled = bool(cancel and cancel.is_set())
+    if cancelled:
+        log(t(f"\nキャンセルしました: 完了済み {len(uids)} 件を出力 -> {out_dir}",
+              f"\nCancelled: exported {len(uids)} completed file(s) -> {out_dir}"))
+    else:
+        log(t(f"\n完了: {len(uids)} 件を出力 -> {out_dir}",
+              f"\nDone: exported {len(uids)} file(s) -> {out_dir}"))
     if opts["make_config"] and uids:
         cfg = out_dir / "config.xml"
         added, total, backup = write_config(uids, cfg, opts.get("config_append", True),
@@ -1846,6 +2243,29 @@ def set_titlebar_dark(window, dark=True):
         pass
 
 
+def set_app_icon(window):
+    """ルートと子ウィンドウで共通のアプリアイコンを使う。"""
+    icon_path = resource_path(APP_ICON_FILENAME)
+    if not icon_path:
+        return
+    try:
+        window.iconbitmap(default=str(icon_path))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def set_windows_app_id():
+    """タスクバーとピン留めで常に同じアプリとして扱わせる。"""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            APP_USER_MODEL_ID)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # ==========================================================================
 # GUI
 # ==========================================================================
@@ -1855,7 +2275,7 @@ def set_titlebar_dark(window, dark=True):
 # 髪の量が多くて枠に収まらない場合は crop_around_face が自動で広げる。
 DEFAULT_FACE_SIZE = 1.37
 FACE_SIZE_MIN, FACE_SIZE_MAX = 0.8, 3.0
-FACE_NECK = 0.05               # 顎下に残す余白（キャンバス高さに対する割合）
+FACE_NECK = 0.18               # 顎を上端約82%に置き、下側に首・襟・肩を残す
 # 旧バージョンの設定ファイル（プリセット番号）からの移行用
 LEGACY_ZOOM_TO_SIZE = {0: 1.37, 1: 1.25}
 
@@ -1864,7 +2284,9 @@ class App(tk.Tk):
     SETTINGS_PATH = Path.home() / ".fm_face_processor.json"
 
     def __init__(self):
+        set_windows_app_id()
         super().__init__()
+        set_app_icon(self)
         self.title(f"FM Face Processor {APP_VERSION}")
         self.geometry("720x860")
         self.minsize(640, 760)
@@ -2591,11 +3013,20 @@ class App(tk.Tk):
             messagebox.showwarning(t("確認", "Notice"),
                                    t("入力フォルダが見つかりません。", "Input folder not found."))
             return
-        subs_with_imgs = [d for d in sorted(p.iterdir()) if d.is_dir()]
-        targets = []
-        for sub in subs_with_imgs:
-            imgs = [f for f in sub.iterdir() if f.suffix.lower() in SUPPORTED_EXT]
-            targets.extend(imgs)
+        output = self.out_var.get().strip()
+        if output:
+            try:
+                if p.resolve() == Path(output).resolve():
+                    messagebox.showwarning(
+                        t("確認", "Notice"),
+                        t("入力と出力が同じフォルダのため、元画像を安全に判別できません。\n"
+                          "出力フォルダを分けてから実行してください。",
+                          "Input and output are the same folder, so source images cannot be identified safely.\n"
+                          "Choose a separate output folder first."))
+                    return
+            except OSError:
+                pass
+        targets = _source_image_delete_targets(p, output or None)
         if not targets:
             messagebox.showinfo(t("情報", "Info"),
                                 t("削除する画像がありません。", "No images found to delete."))
@@ -2726,33 +3157,39 @@ class App(tk.Tk):
         win.title(t("プレビュー・微調整", "Preview & adjust"))
         win.grab_set()
         win.resizable(False, False)
+        set_titlebar_dark(win, self.mode == "dark")
         lbl = ttk.Label(win)
-        lbl.pack(padx=12, pady=12)
+        lbl.pack(padx=12, pady=(12, 4))
+        ttk.Label(
+            win,
+            text=t("枠の内側が保存されます（枠線は画像に入りません）",
+                   "Everything inside the frame is saved (the line is not saved)"),
+        ).pack(padx=12, pady=(0, 10))
 
         zoom_var = tk.DoubleVar(value=100.0)
         x_var = tk.DoubleVar(value=0.0)
         y_var = tk.DoubleVar(value=0.0)
         angle_var = tk.DoubleVar(value=0.0)
+        neck_var = tk.DoubleVar(value=0.0)
         zoom_text = tk.StringVar()
         x_text = tk.StringVar()
         y_text = tk.StringVar()
         angle_text = tk.StringVar()
+        neck_text = tk.StringVar()
         max_x = max(10, int(img.width * 0.25))
         max_y = max(10, int(img.height * 0.25))
+        chin_ratio = holder.get("chin_ratio")
+        chin_y = None if chin_ratio is None else float(chin_ratio) * img.height
+        max_neck = neck_shortening_limit(img, chin_y)
 
         def adjusted_image():
             return apply_preview_adjustment(
-                img, zoom_var.get() / 100.0, x_var.get(), y_var.get(), angle_var.get())
+                img, zoom_var.get() / 100.0, x_var.get(), y_var.get(), angle_var.get(),
+                neck_var.get(), chin_y)
 
         def render(_value=None):
             adjusted = adjusted_image()
-            # 通常の180px出力は2倍表示。大きな出力でも画面からはみ出さない。
-            display_scale = min(2.0, 520.0 / adjusted.width, 520.0 / adjusted.height)
-            dw = max(1, int(round(adjusted.width * display_scale)))
-            dh = max(1, int(round(adjusted.height * display_scale)))
-            resampling = getattr(_I, "Resampling", _I)
-            method = resampling.NEAREST if display_scale >= 1.0 else resampling.LANCZOS
-            shown = adjusted.resize((dw, dh), method)
+            shown = make_crop_frame_preview(adjusted, self.mode)
             photo = ImageTk.PhotoImage(shown)
             lbl.configure(image=photo)
             lbl.image = photo
@@ -2760,6 +3197,7 @@ class App(tk.Tk):
             x_text.set(f"{x_var.get():+.0f}px")
             y_text.set(f"{y_var.get():+.0f}px")
             angle_text.set(f"{angle_var.get():+.1f}°")
+            neck_text.set(f"{neck_var.get():.0f}px")
 
         controls = ttk.LabelFrame(win, text=t("位置と角度", "Position and angle"), padding=8)
         controls.pack(fill="x", padx=12, pady=(0, 10))
@@ -2768,25 +3206,31 @@ class App(tk.Tk):
         def add_slider(row, label_ja, label_en, variable, start, end, value_text):
             ttk.Label(controls, text=t(label_ja, label_en), width=9).grid(
                 row=row, column=0, sticky="w", pady=2)
-            ttk.Scale(controls, variable=variable, from_=start, to=end,
-                      command=render, length=300).grid(row=row, column=1, sticky="ew", padx=6)
+            scale = ttk.Scale(controls, variable=variable, from_=start, to=end,
+                              command=render, length=300)
+            scale.grid(row=row, column=1, sticky="ew", padx=6)
             ttk.Label(controls, textvariable=value_text, width=8).grid(
                 row=row, column=2, sticky="e")
+            return scale
 
         add_slider(0, "拡大率", "Zoom", zoom_var, 70, 140, zoom_text)
         add_slider(1, "左右", "Left/right", x_var, -max_x, max_x, x_text)
         add_slider(2, "上下", "Up/down", y_var, -max_y, max_y, y_text)
         add_slider(3, "回転", "Rotation", angle_var, -15, 15, angle_text)
+        neck_scale = add_slider(4, "首を短く", "Shorten neck", neck_var, 0, max(1, max_neck), neck_text)
+        if max_neck <= 0:
+            neck_scale.state(["disabled"])
 
         def reset_adjustment():
             zoom_var.set(100.0)
             x_var.set(0.0)
             y_var.set(0.0)
             angle_var.set(0.0)
+            neck_var.set(0.0)
             render()
 
         ttk.Button(controls, text=t("調整をリセット", "Reset adjustments"),
-                   command=reset_adjustment).grid(row=4, column=0, columnspan=3, pady=(6, 0))
+                   command=reset_adjustment).grid(row=5, column=0, columnspan=3, pady=(6, 0))
         btns = ttk.Frame(win); btns.pack(pady=(0, 12))
 
         def answer(r):
@@ -2830,6 +3274,9 @@ class App(tk.Tk):
                     finally:
                         ev.set()
                 elif kind == "done":
+                    cancelled = False
+                    if isinstance(payload, tuple):
+                        payload, cancelled = payload
                     elapsed = time.monotonic() - getattr(self, "_run_start", time.monotonic())
                     self._running = False
                     self._apply_busy_state()
@@ -2838,6 +3285,11 @@ class App(tk.Tk):
                     self._save_settings()
                     if payload:
                         messagebox.showerror(t("エラー", "Error"), str(payload))
+                    elif cancelled:
+                        messagebox.showinfo(
+                            t("キャンセル", "Cancelled"),
+                            t("処理をキャンセルしました。完了済みの画像は保存されています。",
+                              "Processing was cancelled. Completed images have been saved."))
                     else:
                         elapsed_msg = t(f"処理が終わりました（{elapsed:.0f}秒）。\nログでペアの対応を確認してください。",
                                         f"Finished in {elapsed:.0f}s.\nCheck the log for the pairings.")
@@ -2932,7 +3384,7 @@ class App(tk.Tk):
                 buf = io.BytesIO()
                 pil_img.save(buf, "PNG")
                 ev = threading.Event()
-                holder = {}
+                holder = {"chin_ratio": pil_img.info.get("fm_chin_ratio")}
                 self.q.put(("preview", (base64.b64encode(buf.getvalue()).decode("ascii"), ev, holder)))
                 # 万一 ev がセットされないままでも固まらないように上限を置く
                 if not ev.wait(timeout=600):
@@ -2994,7 +3446,8 @@ class App(tk.Tk):
                 if low_power:
                     set_process_priority(False)
                     set_low_power(False)
-                self.q.put(("done", err))
+                cancelled = bool(self._cancel_event.is_set())
+                self.q.put(("done", (err, cancelled)))
 
         self._worker = threading.Thread(target=worker, daemon=True)
         self._worker.start()

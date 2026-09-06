@@ -17,6 +17,7 @@ processed/
 # Release archives and user images
 *.zip
 *.png
+!assets/fm_face_processor.png
 *.jpg
 *.jpeg
 *.webp

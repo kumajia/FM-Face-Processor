@@ -1,15 +1,26 @@
-# FM Face Processor v2.1.0
-
-**顔写真 + IDスクショ → FMポートレート + config.xml を全自動生成**
+<div align="center">
+  <img src="assets/fm_face_processor.png" alt="FM Face Processor icon" width="144">
+  <h1>FM Face Processor v2.2.0</h1>
+  <p><strong>顔写真 + IDスクショ → FMポートレート + config.xml を全自動生成</strong></p>
+  <p><a href="#日本語">日本語</a> · <a href="#english">English</a></p>
+</div>
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/License-MIT-green)](https://github.com/kumajia/FM-Face-Processor/blob/main/LICENSE)
-[![Release](https://img.shields.io/badge/Release-v2.1.0-2ea44f)](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.1.0)
+[![Release](https://img.shields.io/badge/Release-v2.2.0-2ea44f)](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.2.0)
 
 Football Manager 用の選手・スタッフ顔グラフィックを半自動で作るツールです。顔写真とFM内IDのスクショを放り込むだけで、高画質化・背景透過・顔トリミング・`config.xml` 生成までまとめて行います。
 
-v2.1.0では、投稿ガイドに合わせて**両目の自動水平補正**と**顎下を詰めたクロップ**を追加しました。保存前プレビューでは、拡大率・位置・角度を1枚ずつ微調整できます。
+<a id="日本語"></a>
+
+## v2.2.0の主な変更
+
+- 投稿ガイドに合わせ、頭頂を上端から約5%、顎を約82%へ配置
+- 長い首の画像では襟を検出し、襟が見える位置まで保存範囲を自動拡張
+- 保存前プレビューに、実際に保存される範囲を示す枠を追加
+- 顔・口・顎を変形させず、顎下から襟までを圧縮する「首を短く」を追加
+- FM Face Processor専用のアプリアイコンを追加
 
 ---
 
@@ -21,29 +32,30 @@ v2.1.0では、投稿ガイドに合わせて**両目の自動水平補正**と*
 | 🖼️ 高画質化 | Real-ESRGAN x4 で拡大 |
 | ✂️ 背景透過 | rembg で透過 PNG 化（モデル選択・髪のフチ調整あり） |
 | 📐 水平補正 | YuNetの両目ランドマークで傾きを検出し、両目が水平になるよう自動補正 |
-| 🎯 顔トリミング | 目〜顎の距離で正規化し、顎下を詰めて肩を抑えた正方形クロップ |
+| 🎯 顔トリミング | 頭頂・目・口・顎を基準に、長い首でも襟位置まで自動拡張する正方形クロップ |
 | 🔢 ID 自動読取 | RapidOCR でスクショから ID を認識 → `<ID>.png` で保存 |
 | 📄 config.xml 生成 | 実行のたびに追記、重複 ID はスキップ |
 | 👶 newgen 対応 | ID に `r-` プレフィックスを付けるオプション |
-| 🌐 UI | 日本語 / 英語、ダーク / ライト テーマ、設定の保存 |
-| 👁️ 保存前プレビュー | 1枚ずつ拡大率・左右・上下・角度を微調整して保存可能 |
-| ☁️ remove.bg API | 任意で使用可能。失敗時はローカルAIへ自動で切り替え |
+| 🌐 UI | 日本語 / 英語、ダーク / ライト テーマ、設定の保存、専用アプリアイコン |
+| 👁️ 保存前プレビュー | 正確な保存枠を見ながら、拡大率・位置・角度・首の長さを1枚ずつ微調整 |
+| ☁️ remove.bg API | 任意で使用可能。通信失敗や不完全な切り抜きを検出するとローカルAIへ自動で切り替え |
 | 🛡️ データ保護 | 一時ファイル保存、`config.xml` の自動バックアップ、ごみ箱への移動 |
 
 ---
 
 ## ダウンロードと起動
 
-[Releasesページ](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.1.0)から `FM.Face.Processor_v2.1.0_Windows.zip` をダウンロードして展開してください。
+[Releasesページ](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.2.0)から `FM.Face.Processor_v2.2.0_Windows.zip` をダウンロードして展開してください。
 
 ```
-FM Face Processor_v2.1.0/
+FM Face Processor_v2.2.0/
 ├── EXE/
 │   └── FM Face Processor/
 │       ├── FM Face Processor.exe
 │       └── 必要な実行ファイル・AIモデル一式
-├── README.md
-└── FM_Face_Processor_仕様書_v2.1.0_Dark.docx
+├── assets/
+│   └── fm_face_processor.png
+└── README.md
 ```
 
 `EXE\FM Face Processor\FM Face Processor.exe` をダブルクリックすれば起動します。**Pythonのインストールは不要**です。
@@ -63,6 +75,14 @@ FM Face Processor_v2.1.0/
 4. 出力フォルダに透過PNG、`config.xml`、処理ログが生成される
 5. 出力物をFMのグラフィックフォルダに入れ、ゲーム内でスキンを再読み込みする
 
+### 保存前プレビュー
+
+- 枠の**内側だけ**が保存されます。枠線そのものはPNGに入りません
+- ダークテーマでは白枠、ライトテーマでは黒枠で表示します
+- 長い首では襟の開始位置を検出し、顔高さの約18%ぶん襟が見えるまで保存枠を自動拡張します
+- 「首を短く」は顔検出で得た顎位置を保護し、顎より下から襟までの首部分だけを滑らかに縦圧縮します
+- 短縮量は検出した首の長さの15%以内に自動制限します。襟が写っていない場合も、顎より下の首末端を使って調整できます
+
 ### IDを読み取れない場合
 
 「IDを自動で読み取る」をOFFにし、顔画像を `50053056.jpg` のように **IDをファイル名にして**処理できます。
@@ -80,6 +100,7 @@ remove.bgを有効にすると、処理対象の顔画像がremove.bgへ送信�
 - 旧バージョンが保存したキーも勝手に削除せず再利用します
 - 設定ファイルとAPIキーはGitHub、配布ZIP、EXEには含めません
 - remove.bgが利用できない場合は、ローカルAIで処理を続行します
+- remove.bgが成功応答でも背景がほぼ残っている場合は、不完全な結果と判定してローカルAIで再処理します
 
 ---
 
@@ -104,6 +125,8 @@ py -3.12 "FM Face Processor.py"
 
 初回のライブラリ準備と、ローカル背景除去モデルを初めて使うときはインターネット接続が必要です。
 
+ソース版では `FM Face Processor.py`、`requirements.txt`、`assets` フォルダを同じ構成のまま置いてください。
+
 ---
 
 ## トラブルシューティング
@@ -114,7 +137,8 @@ py -3.12 "FM Face Processor.py"
 | 顔写真とIDの組み合わせが違う | 撮影時刻を確認するか、1人分ずつサブフォルダに分ける |
 | 背景が抜けない | ローカルAIまたはremove.bgを有効にし、処理ログを確認する |
 | remove.bgが使えない | APIキーと通信環境を確認する。失敗時はローカルAIへ自動で切り替わる |
-| 顔が大きすぎる / 切れる | 「顔の大きさ」を小さくするか、「保存前にプレビュー」で位置と倍率を調整する |
+| 顔が大きすぎる / 切れる | 「顔の大きさ」の数値を大きくするか、「保存前にプレビュー」で位置と倍率を調整する |
+| 首が長すぎる | 「保存前にプレビュー」をONにし、「首を短く」を少しずつ上げる |
 | 顔の角度を直したい | 「両目を水平に自動補正」をONにする。必要ならプレビューで角度を微調整する |
 | 高画質化できない | 「AI高画質化（Real-ESRGAN）」をOFFにするか、配布ZIPを展開し直す |
 | EXEが起動しない | ZIPを完全に展開し、EXE単体ではなくフォルダ一式で起動する |
@@ -127,25 +151,34 @@ py -3.12 "FM Face Processor.py"
 
 A semi-automatic tool for creating Football Manager player and staff face graphics. Drop in a face photo and an in-game ID screenshot, and the app can upscale the image, remove its background, crop the face, and generate `config.xml`.
 
-Version 2.1.0 adds **automatic eye levelling**, a **tighter chin crop**, and per-image zoom, position, and rotation controls in the save preview.
+### What's new in v2.2.0
+
+- Places the crown at roughly 5% from the top and the chin near 82% to better match cut-out submission guidelines
+- Detects the collar on long-neck sources and automatically expands the saved area to retain it
+- Shows the exact saved boundary in the preview
+- Adds **Shorten neck**, which compresses only the area below the protected chin without changing the face, mouth, or jaw
+- Adds a dedicated FM Face Processor application icon
 
 ### Features
 
-- Face detection with YuNet and Haar fallback
-- Automatic eye levelling using YuNet landmarks
-- Optional 4× upscaling via Real-ESRGAN
-- Transparent PNG background removal using local AI (rembg) or the remove.bg API
-- Normalized square crop based on eye-to-chin distance with tighter space below the chin
-- OCR-based ID reading with RapidOCR → saves as `<ID>.png`
-- Automatic `config.xml` generation with append and duplicate-skip support
-- Newgen support with the `r-` prefix option
-- Preview with per-image zoom, position, and rotation adjustment before saving
-- English / Japanese UI, dark / light themes, and persistent settings
-- Safer saving, `config.xml` backups, and recoverable Recycle Bin cleanup
+| Feature | Description |
+|---------|-------------|
+| 🔍 Face detection | High-accuracy YuNet with Haar cascade fallback |
+| 🖼️ Upscaling | Optional 4× enlargement with Real-ESRGAN |
+| ✂️ Background removal | Transparent PNG output using rembg or the optional remove.bg API |
+| 📐 Eye levelling | Uses YuNet eye landmarks to correct tilt automatically |
+| 🎯 Face crop | Normalized square crop based on crown, eyes, mouth, chin, and detected collar position |
+| 🔢 Automatic ID reading | RapidOCR reads the ID screenshot and saves the portrait as `<ID>.png` |
+| 📄 `config.xml` | Appends entries automatically and skips duplicate IDs |
+| 👶 Newgen support | Optional `r-` prefix for newgen IDs |
+| 🌐 UI | English / Japanese, dark / light themes, persistent settings, and a dedicated app icon |
+| 👁️ Preview before saving | Exact saved frame plus per-image zoom, position, rotation, and neck-length adjustment |
+| ☁️ remove.bg API | Optional; automatically falls back to local AI when unavailable or when the returned cutout is incomplete |
+| 🛡️ Data protection | Temporary-file saving, automatic `config.xml` backups, and recoverable Recycle Bin cleanup |
 
 ### Download and launch
 
-Download `FM.Face.Processor_v2.1.0_Windows.zip` from the [v2.1.0 release page](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.1.0), then extract the ZIP.
+Download `FM.Face.Processor_v2.2.0_Windows.zip` from the [v2.2.0 release page](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.2.0), then extract the ZIP.
 
 Run:
 
@@ -169,6 +202,14 @@ If OCR cannot read an ID, turn off **Auto-read ID** and name the face image with
 
 Check the processing log to confirm OCR pairing. **Preview before saving** is recommended for important face packs.
 
+### Preview before saving
+
+- Only the **inside of the frame** is saved; the line itself is never written to the PNG
+- The frame is white in dark mode and black in light mode
+- For long-neck sources, the crop expands past the detected collar line to keep a visible collar depth of roughly 18% of the face height
+- **Shorten neck** protects the detected chin and smoothly compresses only the neck area below it without changing the face scale
+- The adjustment is limited to 15% of the detected neck length; when no collar is visible, it safely uses the end of the cut-out below the protected chin
+
 ### About remove.bg
 
 When remove.bg is enabled, the face image being processed is uploaded to remove.bg. Review its terms and privacy requirements before use.
@@ -178,6 +219,7 @@ When remove.bg is enabled, the face image being processed is uploaded to remove.
 - Keys saved by older versions are kept and reused instead of being deleted
 - Settings and API keys are never included in GitHub, the release ZIP, or the EXE
 - If remove.bg is unavailable, processing continues with the local AI
+- If remove.bg returns successfully but leaves most of the background intact, the app detects the incomplete mask and retries with the local AI
 
 ### Data protection
 
@@ -198,6 +240,8 @@ py -3.12 "FM Face Processor.py"
 
 An internet connection is required when preparing the libraries and the first time the local background-removal model is used.
 
+Keep `FM Face Processor.py`, `requirements.txt`, and the `assets` folder in the same directory structure when running from source.
+
 ### Troubleshooting
 
 | Issue | Fix |
@@ -206,10 +250,24 @@ An internet connection is required when preparing the libraries and the first ti
 | Face and ID are paired incorrectly | Check capture times or place each person's files in a separate subfolder |
 | Background is not removed | Enable local AI or remove.bg and check the processing log |
 | remove.bg is unavailable | Check the API key and connection; the app automatically falls back to local AI |
-| Face is too large / cut off | Lower the **Face size** setting |
+| Face is too large | Increase the **Face size** setting (a larger value makes the face smaller) |
+| Chin is cut off | Use v2.2.0 or later; it corrects shallow chin detection and leaves safer space below it |
+| Neck is too long | Enable **Preview before saving** and gradually increase **Shorten neck** |
 | Face is tilted | Enable **Auto-level eyes**, then fine-tune the angle in the preview if needed |
 | Upscaling fails | Turn off **AI upscale (Real-ESRGAN)** or extract the release ZIP again |
 | EXE does not start | Fully extract the ZIP and launch it with the complete folder intact |
+
+---
+
+## ライセンス / License
+
+ソースコードは [MIT License](LICENSE) で提供しています。
+
+**FM Face Processor** の名称、ロゴ、アイコン、プロモーション画像はMIT Licenseの対象外です。改変版・再配布版では別の名称とブランドを使用し、公式リリースであると誤認させる表示を行わないでください。
+
+The source code is licensed under the [MIT License](LICENSE). The **FM Face Processor** name, logo, icons, and promotional artwork are not covered by the MIT License. Modified or redistributed versions must use a different name and branding and must not imply that they are official releases.
+
+詳しくは [BRANDING.md](BRANDING.md) をご覧ください。 / See [BRANDING.md](BRANDING.md) for details.
 
 ---
 
@@ -217,4 +275,4 @@ An internet connection is required when preparing the libraries and the first ti
 
 [Releasesページ / Releases](https://github.com/kumajia/FM-Face-Processor/releases)をご覧ください。
 
-バージョン / Version: v2.1.0
+バージョン / Version: v2.2.0
