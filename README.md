@@ -1,6 +1,6 @@
 <div align="center">
   <img src="assets/fm_face_processor.png" alt="FM Face Processor icon" width="144">
-  <h1>FM Face Processor v2.2.0</h1>
+  <h1>FM Face Processor v2.2.1</h1>
   <p><strong>顔写真 + IDスクショ → FMポートレート + config.xml を全自動生成</strong></p>
   <p><a href="#日本語">日本語</a> · <a href="#english">English</a></p>
 </div>
@@ -8,13 +8,17 @@
 [![Python](https://img.shields.io/badge/Python-3.12-blue)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/License-MIT-green)](https://github.com/kumajia/FM-Face-Processor/blob/main/LICENSE)
-[![Release](https://img.shields.io/badge/Release-v2.2.0-2ea44f)](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.2.0)
+[![Release](https://img.shields.io/badge/Release-v2.2.1-2ea44f)](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.2.1)
 
 Football Manager 用の選手・スタッフ顔グラフィックを半自動で作るツールです。顔写真とFM内IDのスクショを放り込むだけで、高画質化・背景透過・顔トリミング・`config.xml` 生成までまとめて行います。
 
 <a id="日本語"></a>
 
-## v2.2.0の主な変更
+## v2.2.1の主な変更
+
+- Windows EXEで、ローカル背景除去モデルの初回ダウンロード時に `'NoneType' object has no attribute 'write'` で失敗する問題を修正
+
+### v2.2.0
 
 - 投稿ガイドに合わせ、頭頂を上端から約5%、顎を約82%へ配置
 - 長い首の画像では襟を検出し、襟が見える位置まで保存範囲を自動拡張
@@ -45,10 +49,10 @@ Football Manager 用の選手・スタッフ顔グラフィックを半自動で
 
 ## ダウンロードと起動
 
-[Releasesページ](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.2.0)から `FM.Face.Processor_v2.2.0_Windows.zip` をダウンロードして展開してください。
+[Releasesページ](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.2.1)から `FM.Face.Processor_v2.2.1_Windows.zip` をダウンロードして展開してください。
 
 ```
-FM Face Processor_v2.2.0/
+FM Face Processor_v2.2.1/
 ├── EXE/
 │   └── FM Face Processor/
 │       ├── FM Face Processor.exe
@@ -151,7 +155,11 @@ py -3.12 "FM Face Processor.py"
 
 A semi-automatic tool for creating Football Manager player and staff face graphics. Drop in a face photo and an in-game ID screenshot, and the app can upscale the image, remove its background, crop the face, and generate `config.xml`.
 
-### What's new in v2.2.0
+### What's new in v2.2.1
+
+- Fixes a Windows EXE failure during the first download of a local background-removal model: `'NoneType' object has no attribute 'write'`
+
+#### v2.2.0
 
 - Places the crown at roughly 5% from the top and the chin near 82% to better match cut-out submission guidelines
 - Detects the collar on long-neck sources and automatically expands the saved area to retain it
@@ -178,7 +186,7 @@ A semi-automatic tool for creating Football Manager player and staff face graphi
 
 ### Download and launch
 
-Download `FM.Face.Processor_v2.2.0_Windows.zip` from the [v2.2.0 release page](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.2.0), then extract the ZIP.
+Download `FM.Face.Processor_v2.2.1_Windows.zip` from the [v2.2.1 release page](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.2.1), then extract the ZIP.
 
 Run:
 
@@ -275,4 +283,4 @@ The source code is licensed under the [MIT License](LICENSE). The **FM Face Proc
 
 [Releasesページ / Releases](https://github.com/kumajia/FM-Face-Processor/releases)をご覧ください。
 
-バージョン / Version: v2.2.0
+バージョン / Version: v2.2.1

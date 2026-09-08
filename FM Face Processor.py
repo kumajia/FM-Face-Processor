@@ -35,6 +35,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
 
+# PyInstaller の画面版では標準出力が接続されず None になる。
+# rembg の初回モデル取得で tqdm が stderr へ進捗を書こうとするため、
+# 書き込み先を破棄用ストリームで補う。
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
@@ -55,7 +63,7 @@ except Exception:  # noqa: BLE001
     HAS_DND = False
 
 SUPPORTED_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
-APP_VERSION = "v2.2.0"
+APP_VERSION = "v2.2.1"
 APP_ICON_FILENAME = "fm_face_processor.ico"
 APP_USER_MODEL_ID = "kumajia.FMFaceProcessor"
 # 「ID」に続く数字（FMのperson ID）を拾う
