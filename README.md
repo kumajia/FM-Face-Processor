@@ -13,6 +13,20 @@
 Football Manager 用の選手・スタッフ顔グラフィックを半自動で作るツールです。顔写真とFM内IDのスクショを放り込むだけで、高画質化・背景透過・顔トリミング・`config.xml` 生成までまとめて行います。
 
 <a id="日本語"></a>
+## 支援 / Support
+
+FM Face Processorは今後も無料で提供します。開発の継続を支援したい方は、Ko-fiから任意でサポートできます。
+
+**[FM Face Processorを支援する / Support FM Face Processor](https://ko-fi.com/kumajia)**
+
+支援は完全に任意です。FM Face Processorをご利用いただき、ありがとうございます。
+
+FM Face Processor is and will remain free to use. If it has saved you time and you would like to support continued development, you can do so on Ko-fi.
+
+Support is completely optional. Thank you for using FM Face Processor.
+
+---
+
 
 ## v2.2.1の主な変更
 
