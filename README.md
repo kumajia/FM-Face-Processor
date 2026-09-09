@@ -150,6 +150,18 @@ py -3.12 "FM Face Processor.py"
 
 ---
 
+## 支援
+
+FM Face Processorは今後も無料で提供します。開発の継続を支援したい方は、Ko-fiから任意でサポートできます。
+
+**[FM Face Processorを支援する](https://ko-fi.com/kumajia)**
+
+支援は完全に任意です。FM Face Processorをご利用いただき、ありがとうございます。
+
+---
+
+
+
 ## English
 
 **Face photo + ID screenshot → FM portrait + config.xml, fully automated**
@@ -268,15 +280,13 @@ Keep `FM Face Processor.py`, `requirements.txt`, and the `assets` folder in the 
 
 ---
 
-## 支援 / Support
-
-FM Face Processorは今後も無料で提供します。開発の継続を支援したい方は、Ko-fiから任意でサポートできます。
-
-**[FM Face Processorを支援する / Support FM Face Processor](https://ko-fi.com/kumajia)**
-
-支援は完全に任意です。FM Face Processorをご利用いただき、ありがとうございます。
+## Support
 
 FM Face Processor is and will remain free to use. If it has saved you time and you would like to support continued development, you can do so on Ko-fi.
+
+**[Support FM Face Processor](https://ko-fi.com/kumajia)**
+
+
 
 Support is completely optional. Thank you for using FM Face Processor.
 
