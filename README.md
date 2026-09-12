@@ -69,6 +69,15 @@ flowchart LR
 
 ### 使い方
 
+#### 「IDスクリーンショット」とは
+
+Football Managerで、選手またはスタッフの固有IDが表示されたプロフィール画面のスクリーンショットです。
+
+1. FMの環境設定を開き、検索欄に `ID` と入力する
+2. 「スキン作成を補助するためタイトルバーに画面IDを表示する」を有効にする
+   - FMのバージョンや表示言語によって、項目名が多少異なる場合があります
+3. 選手またはスタッフのプロフィールを開き、`ID: 2000468148` のようなIDが見える状態でスクリーンショットを撮る
+
 1. 入力フォルダに顔写真とFM内IDが写ったスクリーンショットを入れる
    - 複数人を処理する場合、撮影時刻が近い画像をOCRで組み合わせます
    - 1人分ずつサブフォルダに分けると、より確実です
@@ -76,6 +85,10 @@ flowchart LR
 3. 必要なオプションを確認して「実行」を押す
 4. 出力された透過PNG、`config.xml`、処理ログを確認する
 5. 出力物をFMのグラフィックフォルダへ入れ、ゲーム内でスキンを再読み込みする
+
+#### IDスクリーンショットを使わない場合
+
+「IDを自動で読み取る」をOFFにし、顔画像を `50053056.jpg` のように **IDをファイル名にして**処理できます。この方法ではIDスクリーンショットは必要ありません。
 
 ### Football Managerへ導入する
 
@@ -238,6 +251,15 @@ flowchart LR
 
 ### How to use
 
+#### What is an ID screenshot?
+
+It is a screenshot of a player or staff profile in Football Manager with that person's unique ID visible.
+
+1. Open **Preferences** in FM and search for `ID`.
+2. Enable **Show screen IDs in the title bar to assist skinning**.
+   - The exact option name may vary slightly depending on the FM version and display language.
+3. Open the player or staff profile and take a screenshot with an ID such as `ID: 2000468148` visible.
+
 1. Put face photos and screenshots containing FM IDs in the input folder
    - OCR pairs screenshots with face photos using nearby capture times
    - For the most reliable pairing, place each person's files in a separate subfolder
@@ -245,6 +267,10 @@ flowchart LR
 3. Review the options and click **Run**
 4. Check the transparent PNG files, `config.xml`, and processing log in the output folder
 5. Copy the output to your FM graphics folder and reload the skin in-game
+
+#### Using the app without an ID screenshot
+
+Turn off **Auto-read ID** and name the face image with the ID, for example `50053056.jpg`. No ID screenshot is required when using this method.
 
 ### Install the output in Football Manager
 
