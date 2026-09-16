@@ -31,6 +31,7 @@ import queue
 import sys
 import threading
 import time
+import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
@@ -63,7 +64,7 @@ except Exception:  # noqa: BLE001
     HAS_DND = False
 
 SUPPORTED_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
-APP_VERSION = "v2.2.1"
+APP_VERSION = "v2.3.0"
 APP_ICON_FILENAME = "fm_face_processor.ico"
 APP_USER_MODEL_ID = "kumajia.FMFaceProcessor"
 # 「ID」に続く数字（FMのperson ID）を拾う
@@ -2296,8 +2297,8 @@ class App(tk.Tk):
         super().__init__()
         set_app_icon(self)
         self.title(f"FM Face Processor {APP_VERSION}")
-        self.geometry("720x860")
-        self.minsize(640, 760)
+        self.geometry("720x800")
+        self.minsize(560, 520)
         self.q = queue.Queue()
         self.mode = "dark"
         self.lang = "ja"
@@ -2323,6 +2324,9 @@ class App(tk.Tk):
         self.apply_theme(self.mode)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._poll_id = self.after(100, self._poll)
+        self._first_help_id = None
+        if not self.help_seen:
+            self._first_help_id = self.after(350, self._show_first_run_help)
 
     # ---------- tk変数（1度だけ作る。再ビルドでも値が残る）----------
     def _init_vars(self):
@@ -2351,6 +2355,9 @@ class App(tk.Tk):
         self.ow_var = tk.BooleanVar(value=False)
         self.debug_var = tk.BooleanVar(value=False)
         self.face_size_var = tk.DoubleVar(value=DEFAULT_FACE_SIZE)
+        self.advanced_var = tk.BooleanVar(value=False)
+        self.help_seen = False
+        self.saved_window_size = ""
 
     # ---------- 設定の保存・復元 ----------
     def _get_num(self, var, default):
@@ -2381,7 +2388,14 @@ class App(tk.Tk):
             "use_removebg": self.use_removebg_var.get(),
             "overwrite": self.ow_var.get(),
             "debug": self.debug_var.get(),
+            "show_advanced": self.advanced_var.get(),
+            "help_seen": self.help_seen,
         }
+        try:
+            if self.state() == "normal":
+                settings["window_size"] = f"{self.winfo_width()}x{self.winfo_height()}"
+        except Exception:  # noqa: BLE001
+            pass
         # APIキーはこのPC内の設定ファイルだけに保存する。
         # 空欄で保存した場合は、旧版が保存したキーを勝手に削除しない。
         removebg_key = self.removebg_var.get().strip()
@@ -2410,6 +2424,14 @@ class App(tk.Tk):
             self.mode = d["mode"]
         if d.get("lang") in ("ja", "en"):
             self.lang = d["lang"]
+        self.help_seen = bool(d.get("help_seen", False))
+        window_size = d.get("window_size", "")
+        if isinstance(window_size, str) and re.fullmatch(r"\d{3,4}x\d{3,4}", window_size):
+            self.saved_window_size = window_size
+            try:
+                self.geometry(window_size)
+            except Exception:  # noqa: BLE001
+                pass
         # 旧形式（プリセット番号）からの移行
         if "face_size" not in d and "zoom_idx" in d:
             try:
@@ -2442,6 +2464,7 @@ class App(tk.Tk):
             ("workers",     self.workers_var),
             ("save_log",    self.save_log_var),
             ("debug",       self.debug_var),
+            ("show_advanced", self.advanced_var),
         ):
             try:
                 var.set(d.get(key, var.get()))
@@ -2473,7 +2496,7 @@ class App(tk.Tk):
         """remove.bg チェックボックスのトグル：キー入力欄を表示/非表示"""
         if self.use_removebg_var.get():
             # before を指定しないと pack 順の末尾（チェックボックス群の下）に移動してしまう
-            ref = getattr(self, "_chk_frame", None)
+            ref = getattr(self, "_advanced_checks_frame", None)
             if ref is not None and ref.winfo_exists():
                 self._apikey_frame.pack(fill="x", pady=(0, 4), before=ref)
             else:
@@ -2504,17 +2527,191 @@ class App(tk.Tk):
                 self.after_cancel(pid)
             except Exception:  # noqa: BLE001
                 pass
+        first_help_id = getattr(self, "_first_help_id", None)
+        if first_help_id is not None:
+            try:
+                self.after_cancel(first_help_id)
+            except Exception:  # noqa: BLE001
+                pass
         self.destroy()
 
+    def _on_content_configure(self, _event=None):
+        """スクロール領域を、現在のUI全体の大きさへ合わせる。"""
+        canvas = getattr(self, "ui_canvas", None)
+        if canvas is not None and canvas.winfo_exists():
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event):
+        """埋め込みフレームを表示領域と同じ幅にする。"""
+        canvas = getattr(self, "ui_canvas", None)
+        item = getattr(self, "_canvas_window", None)
+        if canvas is not None and item is not None:
+            canvas.itemconfigure(item, width=max(1, event.width))
+
+    def _on_main_mousewheel(self, event):
+        """小さいウィンドウでは画面全体をホイールで縦スクロールする。"""
+        canvas = getattr(self, "ui_canvas", None)
+        outer = getattr(self, "outer", None)
+        if canvas is None or outer is None:
+            return None
+
+        # ログ欄の上では従来どおりログだけをスクロールする。
+        widget = event.widget
+        while widget is not None:
+            if widget is getattr(self, "log", None):
+                return None
+            widget = getattr(widget, "master", None)
+
+        if outer.winfo_reqheight() <= canvas.winfo_height():
+            return None
+        delta = int(-event.delta / 120) if event.delta else 0
+        if delta == 0:
+            delta = -1 if event.delta > 0 else 1
+        canvas.yview_scroll(delta, "units")
+        return "break"
+
+    def _sync_advanced_visibility(self):
+        frame = getattr(self, "advanced_frame", None)
+        button = getattr(self, "advanced_btn", None)
+        if frame is None or button is None:
+            return
+        if self.advanced_var.get():
+            frame.pack(fill="x", pady=(6, 0))
+            marker = "▲"
+        else:
+            frame.pack_forget()
+            marker = "▼"
+        button.config(text=t(f"詳細設定 {marker}", f"Advanced settings {marker}"))
+        self.after_idle(self._on_content_configure)
+
+    def _toggle_advanced(self):
+        self.advanced_var.set(not self.advanced_var.get())
+        self._sync_advanced_visibility()
+
+    def _show_first_run_help(self):
+        self._first_help_id = None
+        self.help_seen = True
+        self._save_settings()
+        self._show_id_help()
+
+    def _open_online_guide(self):
+        anchor = "%E4%BD%BF%E3%81%84%E6%96%B9" if self.lang == "ja" else "how-to-use"
+        try:
+            webbrowser.open(f"https://github.com/kumajia/FM-Face-Processor#{anchor}")
+        except Exception as e:  # noqa: BLE001
+            messagebox.showwarning(
+                t("確認", "Notice"),
+                t(f"ブラウザを開けませんでした: {e}", f"Could not open the browser: {e}"))
+
+    def _show_id_help(self):
+        existing = getattr(self, "_help_window", None)
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            existing.focus_force()
+            return
+
+        win = tk.Toplevel(self)
+        self._help_window = win
+        set_app_icon(win)
+        win.title(t("使い方：IDの指定", "Quick guide: providing an ID"))
+        win.geometry("560x520")
+        win.minsize(440, 400)
+        win.transient(self)
+
+        body = ttk.Frame(win, padding=16)
+        body.pack(fill="both", expand=True)
+        ttk.Label(
+            body,
+            text=t("IDの指定方法は2つあります", "There are two ways to provide an ID"),
+            style="Header.TLabel").pack(anchor="w", pady=(0, 10))
+
+        auto = ttk.LabelFrame(
+            body,
+            text=t("方法1：FMの画面からIDを自動で読む", "Method 1: Read the ID from FM automatically"),
+            padding=10)
+        auto.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            auto,
+            text=t(
+                "FMの環境設定で「ID」を検索し、スキン作成を補助するための画面ID表示を有効にします。"
+                "選手またはスタッフのプロフィールを開き、IDが見えるスクリーンショットと顔写真を同じ入力フォルダへ入れてください。",
+                "In FM Preferences, search for 'ID' and enable the option that shows screen IDs for skinning. "
+                "Open the player or staff profile, then put a screenshot showing the ID and the face photo in the same input folder."),
+            wraplength=500,
+            justify="left").pack(fill="x", anchor="w")
+
+        sample = ttk.LabelFrame(
+            auto, text=t("IDスクリーンショットの例", "Example ID screenshot"), padding=10)
+        sample.pack(fill="x", pady=(10, 0))
+        sample_row = ttk.Frame(sample)
+        sample_row.pack(fill="x")
+        ttk.Label(sample_row, text="Finn Sundstrom 25").pack(side="left")
+        ttk.Label(sample_row, text="ID: 2000468148",
+                  font=("", 11, "bold")).pack(side="right")
+        ttk.Label(
+            sample,
+            text=t("このように人物のIDが読める状態で画面を撮ります。",
+                   "Take the screenshot while the person's ID is readable like this."),
+            style="Sub.TLabel").pack(anchor="w", pady=(6, 0))
+
+        manual = ttk.LabelFrame(
+            body,
+            text=t("方法2：スクリーンショットを使わない", "Method 2: Do not use a screenshot"),
+            padding=10)
+        manual.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            manual,
+            text=t(
+                "「IDを自動で読み取る」をOFFにし、顔写真のファイル名を人物IDにします。\n例：2000468148.jpg",
+                "Turn off 'Auto-read ID' and rename the face photo to the person's ID.\nExample: 2000468148.jpg"),
+            wraplength=500,
+            justify="left").pack(fill="x", anchor="w")
+
+        ttk.Label(
+            body,
+            text=t("入力と出力には別々のフォルダを選び、準備できたら「実行」を押します。",
+                   "Choose separate input and output folders, then click Run."),
+            wraplength=500,
+            justify="left").pack(fill="x", anchor="w", pady=(0, 10))
+
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x", side="bottom")
+        ttk.Button(
+            buttons,
+            text=t("詳しい説明をGitHubで開く", "Open the full guide on GitHub"),
+            command=self._open_online_guide).pack(side="left")
+        ttk.Button(buttons, text=t("閉じる", "Close"),
+                   command=win.destroy).pack(side="right")
+
+        try:
+            bg = self.style.lookup("TFrame", "background")
+            if bg:
+                win.configure(background=bg)
+        except Exception:  # noqa: BLE001
+            pass
+        win.focus_force()
+
     def _build(self):
-        if getattr(self, "outer", None) is not None:
-            self.outer.destroy()
-        self.outer = outer = ttk.Frame(self, padding=12)
-        outer.pack(fill="both", expand=True)
+        if getattr(self, "ui_shell", None) is not None:
+            self.ui_shell.destroy()
+
+        self.ui_shell = shell = ttk.Frame(self)
+        shell.pack(fill="both", expand=True)
+        self.ui_canvas = canvas = tk.Canvas(shell, highlightthickness=0, borderwidth=0)
+        scroll = ttk.Scrollbar(shell, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        self.outer = outer = ttk.Frame(canvas, padding=12)
+        self._canvas_window = canvas.create_window((0, 0), window=outer, anchor="nw")
+        outer.bind("<Configure>", self._on_content_configure)
+        canvas.bind("<Configure>", self._on_canvas_configure)
+        self.bind("<MouseWheel>", self._on_main_mousewheel)
 
         # ── ヘッダー ────────────────────────────────────────────
         header = ttk.Frame(outer); header.pack(fill="x", pady=(0, 6))
-        header.columnconfigure(1, weight=1)
+        header.columnconfigure(0, weight=1)
         titlerow = ttk.Frame(header); titlerow.grid(row=0, column=0, sticky="w")
         lbl = ttk.Label(titlerow, text="FM Face Processor", style="Header.TLabel")
         lbl.pack(side="left")
@@ -2524,9 +2721,9 @@ class App(tk.Tk):
                         text=t("顔画像＋IDスクショ → 透過PNG ＋ config.xml",
                                "Face + ID screenshot -> transparent PNG + config.xml"),
                         style="Sub.TLabel")
-        sub.grid(row=0, column=1, sticky="w", padx=(10, 6))
+        sub.grid(row=1, column=0, columnspan=2, sticky="w", pady=(3, 0))
 
-        btns = ttk.Frame(header); btns.grid(row=0, column=2, sticky="e")
+        btns = ttk.Frame(header); btns.grid(row=0, column=1, sticky="e")
         self.lang_btn = ttk.Button(btns,
                                    text="EN" if self.lang == "ja" else "日本語",
                                    command=self._toggle_lang,
@@ -2536,6 +2733,9 @@ class App(tk.Tk):
         self.lang_btn.pack(side="right", padx=(4, 0))
         self.theme_btn = ttk.Button(btns, text="", command=self._toggle_theme, width=3)
         self.theme_btn.pack(side="right")
+        self.help_btn = ttk.Button(btns, text=t("使い方", "Guide"),
+                                   command=self._show_id_help)
+        self.help_btn.pack(side="right", padx=(0, 4))
 
         # ── フォルダ選択 ────────────────────────────────────────
         fld = ttk.LabelFrame(outer, text=t("フォルダ", "Folders"), padding=8)
@@ -2577,75 +2777,83 @@ class App(tk.Tk):
         opt = ttk.LabelFrame(outer, text=t("オプション", "Options"), padding=8)
         opt.pack(fill="x", pady=(0, 6))
 
-        row = ttk.Frame(opt); row.pack(fill="x", pady=(0, 4))
+        basic = ttk.Frame(opt)
+        basic.pack(fill="x")
+        basic.columnconfigure(0, weight=1)
+        basic.columnconfigure(1, weight=1)
+        ttk.Checkbutton(basic, text=t("IDを自動で読み取る", "Auto-read ID"),
+                        variable=self.ocr_var).grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Checkbutton(basic, text=t("顔を中心に切り抜く", "Crop around face"),
+                        variable=self.facecrop_var).grid(row=0, column=1, sticky="w", pady=2)
+        ttk.Checkbutton(basic, text=t("画像を拡大する", "Upscale"),
+                        variable=self.upscale_var).grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Checkbutton(basic, text=t("両目を水平に自動補正", "Auto-level eyes"),
+                        variable=self.auto_level_var).grid(row=1, column=1, sticky="w", pady=2)
+        ttk.Checkbutton(basic, text=t("背景を消して透過にする", "Remove background (transparent)"),
+                        variable=self.bg_var).grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Checkbutton(basic, text=t("保存前にプレビュー", "Preview before saving"),
+                        variable=self.preview_var).grid(row=2, column=1, sticky="w", pady=2)
+        ttk.Checkbutton(basic, text=t("config.xml を作る", "Generate config.xml"),
+                        variable=self.cfg_var).grid(row=3, column=0, sticky="w", pady=2)
+
+        self.advanced_btn = ttk.Button(opt, command=self._toggle_advanced)
+        self.advanced_btn.pack(fill="x", pady=(6, 0))
+        self.advanced_frame = advanced = ttk.Frame(opt)
+
+        row = ttk.Frame(advanced); row.pack(fill="x", pady=(0, 4))
         ttk.Label(row, text=t("出力サイズ", "Output size")).pack(side="left")
         ttk.Entry(row, textvariable=self.size_var, width=6).pack(side="left", padx=(6, 0))
-        ttk.Label(row, text="px", style="Sub.TLabel").pack(side="left", padx=(2, 16))
+        ttk.Label(row, text="px", style="Sub.TLabel").pack(side="left", padx=(2, 10))
         ttk.Label(row, text=t("拡大倍率", "Upscale factor")).pack(side="left")
         ttk.Entry(row, textvariable=self.scale_var, width=5).pack(side="left", padx=(6, 0))
-        ttk.Label(row, text="x", style="Sub.TLabel").pack(side="left", padx=(2, 16))
+        ttk.Label(row, text="x", style="Sub.TLabel").pack(side="left", padx=(2, 10))
         ttk.Label(row, text=t("フィット", "Fit")).pack(side="left")
-        ttk.Combobox(row, textvariable=self.fit_var, width=9, state="readonly",
-                     values=["contain", "cover", "stretch"]).pack(side="left", padx=(6, 16))
+        ttk.Combobox(row, textvariable=self.fit_var, width=8, state="readonly",
+                     values=["contain", "cover", "stretch"]).pack(side="left", padx=(6, 10))
         ttk.Label(row, text=t("顔サイズ", "Face size")).pack(side="left")
         ttk.Entry(row, textvariable=self.face_size_var, width=5).pack(side="left", padx=(6, 0))
 
-        row2 = ttk.Frame(opt); row2.pack(fill="x", pady=(0, 4))
+        row2 = ttk.Frame(advanced); row2.pack(fill="x", pady=(0, 4))
         ttk.Label(row2, text=t("背景モデル", "BG model")).pack(side="left")
-        ttk.Combobox(row2, textvariable=self.model_var, width=20, state="readonly",
+        ttk.Combobox(row2, textvariable=self.model_var, width=18, state="readonly",
                      values=["isnet-general-use", "birefnet-general", "birefnet-general-lite",
                              "birefnet-portrait", "u2net_human_seg", "u2net"]).pack(side="left", padx=(6, 16))
         ttk.Checkbutton(row2, text=t("髪のフチをなめらかにする", "Smooth hair edges (alpha matting)"),
                         variable=self.matting_var).pack(side="left")
-        row2b = ttk.Frame(opt); row2b.pack(fill="x", pady=(0, 4))
+        row2b = ttk.Frame(advanced); row2b.pack(fill="x", pady=(0, 4))
         ttk.Checkbutton(row2b, text=t("remove.bg API を使う（画像を外部送信）",
                                       "Use remove.bg API (uploads the image)"),
                         variable=self.use_removebg_var,
                         command=self._on_removebg_toggle).pack(side="left")
 
-        self._apikey_frame = rowk = ttk.Frame(opt)
+        self._apikey_frame = rowk = ttk.Frame(advanced)
         ttk.Label(rowk, text=t("remove.bg APIキー（このPC内だけに保存）",
                                "remove.bg API key (saved only on this PC)")).pack(side="left")
-        self._apikey_entry = ttk.Entry(rowk, textvariable=self.removebg_var, width=30, show="●")
+        self._apikey_entry = ttk.Entry(rowk, textvariable=self.removebg_var, width=24, show="●")
         self._apikey_entry.pack(side="left", padx=(6, 0))
         self._apikey_show = tk.BooleanVar(value=False)
         def _toggle_key():
             self._apikey_entry.config(show="" if self._apikey_show.get() else "●")
         ttk.Checkbutton(rowk, text=t("表示", "Show"), variable=self._apikey_show,
                         command=_toggle_key).pack(side="left", padx=(6, 0))
-        if self.use_removebg_var.get():
-            rowk.pack(fill="x", pady=(0, 4))
 
-        chk = self._chk_frame = ttk.Frame(opt); chk.pack(fill="both", expand=True)
+        chk = self._advanced_checks_frame = ttk.Frame(advanced)
+        chk.pack(fill="both", expand=True)
         chk.columnconfigure(0, weight=1)
         chk.columnconfigure(1, weight=1)
-        ttk.Checkbutton(chk, text=t("IDを自動で読み取る", "Auto-read ID"),
-                        variable=self.ocr_var).grid(row=0, column=0, sticky="w", pady=2)
-        ttk.Checkbutton(chk, text=t("顔を中心に切り抜く", "Crop around face"),
-                        variable=self.facecrop_var).grid(row=0, column=1, sticky="w", pady=2)
-        ttk.Checkbutton(chk, text=t("両目を水平に自動補正", "Auto-level eyes"),
-                        variable=self.auto_level_var).grid(row=1, column=1, sticky="w", pady=2)
-        ttk.Checkbutton(chk, text=t("画像を拡大する", "Upscale"),
-                        variable=self.upscale_var).grid(row=1, column=0, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("AI高画質化 (Real-ESRGAN)", "AI upscale (Real-ESRGAN)"),
-                        variable=self.ai_var).grid(row=2, column=1, sticky="w", pady=2)
-        ttk.Checkbutton(chk, text=t("背景を消して透過にする", "Remove background (transparent)"),
-                        variable=self.bg_var).grid(row=2, column=0, sticky="w", pady=2)
-        ttk.Checkbutton(chk, text=t("保存前にプレビュー", "Preview before saving"),
-                        variable=self.preview_var).grid(row=3, column=1, sticky="w", pady=2)
-        ttk.Checkbutton(chk, text=t("config.xml を作る", "Generate config.xml"),
-                        variable=self.cfg_var).grid(row=3, column=0, sticky="w", pady=2)
+                        variable=self.ai_var).grid(row=0, column=0, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("config.xml に書き足す（重複無視）", "Append to config.xml (skip dups)"),
-                        variable=self.append_var).grid(row=4, column=1, sticky="w", pady=2)
+                        variable=self.append_var).grid(row=0, column=1, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("作成済みでも作り直す", "Overwrite existing"),
-                        variable=self.ow_var).grid(row=4, column=0, sticky="w", pady=2)
+                        variable=self.ow_var).grid(row=1, column=0, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("生成選手 (newgen) に対応する — ID に r- を付ける",
                                     "Add r- prefix for newgen players"),
-                        variable=self.newgen_var).grid(row=5, column=0, columnspan=2, sticky="w", pady=2)
+                        variable=self.newgen_var).grid(row=1, column=1, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("低負荷モード（他のアプリにCPUを譲る・処理は遅くなる）",
                                     "Low-load mode (yields CPU to other apps; slower)"),
-                        variable=self.lowpower_var).grid(row=6, column=0, columnspan=2, sticky="w", pady=2)
-        wrow = ttk.Frame(chk); wrow.grid(row=7, column=0, columnspan=2, sticky="w", pady=2)
+                        variable=self.lowpower_var).grid(row=2, column=0, columnspan=2, sticky="w", pady=2)
+        wrow = ttk.Frame(chk); wrow.grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
         ttk.Label(wrow, text=t("並列処理数", "Parallel workers")).pack(side="left")
         ttk.Spinbox(wrow, textvariable=self.workers_var, from_=1, to=8, width=4,
                     state="readonly").pack(side="left", padx=(6, 0))
@@ -2654,22 +2862,28 @@ class App(tk.Tk):
                   style="Sub.TLabel").pack(side="left")
         ttk.Checkbutton(chk, text=t("ログをファイルに保存する（出力フォルダに processing_log_*.txt）",
                                     "Save log to file (processing_log_*.txt in output folder)"),
-                        variable=self.save_log_var).grid(row=8, column=0, columnspan=2, sticky="w", pady=2)
+                        variable=self.save_log_var).grid(row=4, column=0, columnspan=2, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("デバッグモード（診断ログを表示）", "Debug mode (show diagnostic logs)"),
-                        variable=self.debug_var).grid(row=9, column=0, columnspan=2, sticky="w", pady=2)
+                        variable=self.debug_var).grid(row=5, column=0, columnspan=2, sticky="w", pady=2)
+
+        if self.use_removebg_var.get():
+            rowk.pack(fill="x", pady=(0, 4), before=chk)
+        self._sync_advanced_visibility()
 
         act = ttk.Frame(outer); act.pack(fill="x", pady=(0, 8))
+        for column in range(4):
+            act.columnconfigure(column, weight=1)
         self.run_btn = ttk.Button(act, text=t("実行", "Run"), style="Accent.TButton", command=self._run)
-        self.run_btn.pack(side="left")
+        self.run_btn.grid(row=0, column=0, sticky="ew")
         self.cancel_btn = ttk.Button(act, text=t("キャンセル", "Cancel"),
                                      style="Danger.TButton", command=self._cancel, state="disabled")
-        self.cancel_btn.pack(side="left", padx=8)
+        self.cancel_btn.grid(row=0, column=1, sticky="ew", padx=(8, 0))
         self.open_btn = ttk.Button(act, text=t("出力フォルダを開く", "Open output folder"),
                                    command=self._open_out, state="disabled")
-        self.open_btn.pack(side="left", padx=8)
+        self.open_btn.grid(row=0, column=2, sticky="ew", padx=(8, 0))
         _dl = ttk.Button(act, text=t("ログをすべて削除", "Delete all logs"),
                          command=self._delete_logs)
-        _dl.pack(side="left", padx=8)
+        _dl.grid(row=0, column=3, sticky="ew", padx=(8, 0))
         self._busy_btns.append(_dl)
 
         self.pb = ttk.Progressbar(outer, mode="determinate"); self.pb.pack(fill="x", pady=(0, 4))
@@ -2690,8 +2904,15 @@ class App(tk.Tk):
         else:
             # 初期案内は処理ログとして保持しない。保持すると言語切替後も
             # 切替前の言語の案内が復元されてしまう。
-            hint = t("顔写真とIDスクショを同じフォルダに入れて「実行」を押してください。",
-                     "Put face photos and ID screenshots in one folder, then press Run.")
+            hint = t(
+                "IDの指定方法:\n"
+                "1) 顔写真＋「ID: 2000468148」のような表示が見えるFM画面を同じフォルダへ\n"
+                "2) または「IDを自動で読み取る」をOFFにして、顔写真を 2000468148.jpg に変更\n"
+                "入力と出力に別々のフォルダを選び、「実行」を押してください。",
+                "Two ways to provide an ID:\n"
+                "1) Put the face photo and an FM screenshot showing an ID such as 'ID: 2000468148' in one folder\n"
+                "2) Or turn off 'Auto-read ID' and rename the face photo to 2000468148.jpg\n"
+                "Choose separate input and output folders, then press Run.")
             self.log.insert("end", hint + "\n")
             self.log_has_content = False
 
@@ -2726,6 +2947,13 @@ class App(tk.Tk):
             sv_ttk.set_theme(mode)
         else:
             self._apply_clam("dark" if mode == "dark" else "light")
+        try:
+            canvas = getattr(self, "ui_canvas", None)
+            bg = self.style.lookup("TFrame", "background")
+            if canvas is not None and bg:
+                canvas.configure(background=bg)
+        except Exception:  # noqa: BLE001
+            pass
         self._refresh_theme_btn()
 
     def _refresh_theme_btn(self):

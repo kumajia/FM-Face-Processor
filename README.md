@@ -44,7 +44,8 @@ Football Manager用の選手・スタッフ顔グラフィックを半自動で�
 ```mermaid
 flowchart LR
     A[顔写真] --> C[FM Face Processor]
-    B[FM内IDのスクショ] --> C
+    B[FM内IDが見えるスクショ] --> C
+    G[またはIDを付けたファイル名] --> C
     C --> D[透過ポートレートPNG]
     C --> E[config.xml]
     C --> F[処理ログ]
@@ -62,7 +63,7 @@ flowchart LR
 | 🔢 ID自動読取 | RapidOCRでスクショからIDを認識し、`<ID>.png`で保存 |
 | 📄 config.xml生成 | 実行のたびに追記し、重複IDはスキップ |
 | 👶 newgen対応 | IDに`r-`プレフィックスを付けるオプション |
-| 🌐 UI | 日本語 / 英語、ダーク / ライトテーマ、設定保存 |
+| 🌐 UI | 日本語 / 英語、ダーク / ライトテーマ、スクロール対応、設定保存 |
 | 👁️ 保存前プレビュー | 保存枠を見ながら拡大率・位置・角度・首の長さを1枚ずつ調整 |
 | ☁️ remove.bg API | 任意。失敗または不完全な結果ではローカルAIへ自動切替 |
 | 🛡️ データ保護 | 一時ファイル保存、`config.xml`自動バックアップ、ごみ箱への移動 |
@@ -143,6 +144,14 @@ py -3.12 "FM Face Processor.py"
 `FM Face Processor.py`、`requirements.txt`、`assets`フォルダは同じ構成のまま置いてください。初回のライブラリ準備と、ローカル背景除去モデルを初めて使用するときはインターネット接続が必要です。
 
 ### 主な更新内容
+
+#### v2.3.0
+
+- 初回起動時に、IDスクリーンショットとファイル名による2種類のID指定方法を案内
+- ヘッダーの「使い方」ボタンから、ID表示例付きガイドをいつでも表示
+- 画面全体を縦スクロール対応にし、最小ウィンドウサイズを縮小
+- 使用頻度の低い項目を「詳細設定」へまとめ、折りたたみ可能に変更
+- 前回終了時のウィンドウサイズを保存
 
 #### v2.2.1
 
@@ -226,7 +235,8 @@ The app is not tied to one specific Football Manager yearly release. If you enco
 ```mermaid
 flowchart LR
     A[Face photo] --> C[FM Face Processor]
-    B[In-game ID screenshot] --> C
+    B[In-game screenshot showing the ID] --> C
+    G[Or an ID-based filename] --> C
     C --> D[Transparent portrait PNG]
     C --> E[config.xml]
     C --> F[Processing log]
@@ -244,7 +254,7 @@ flowchart LR
 | 🔢 Automatic ID reading | RapidOCR reads the ID screenshot and saves the portrait as `<ID>.png` |
 | 📄 config.xml | Appends entries automatically and skips duplicate IDs |
 | 👶 Newgen support | Optional `r-` prefix for newgen IDs |
-| 🌐 UI | English / Japanese, dark / light themes, and persistent settings |
+| 🌐 UI | English / Japanese, dark / light themes, scrolling, and persistent settings |
 | 👁️ Preview before saving | Exact saved frame plus per-image zoom, position, rotation, and neck-length adjustment |
 | ☁️ remove.bg API | Optional; falls back to local AI when unavailable or incomplete |
 | 🛡️ Data protection | Temporary-file saving, automatic `config.xml` backups, and Recycle Bin cleanup |
@@ -325,6 +335,14 @@ py -3.12 "FM Face Processor.py"
 Keep `FM Face Processor.py`, `requirements.txt`, and the `assets` folder in the same directory structure. Internet access is required while installing dependencies and the first time the local background-removal model is used.
 
 ### What's new
+
+#### v2.3.0
+
+- Explains both ID-screenshot and filename-based workflows on first launch
+- Adds an always-available **Guide** button with a visible ID example
+- Makes the whole interface vertically scrollable and reduces the minimum window size
+- Moves less frequently used options into a collapsible **Advanced settings** section
+- Remembers the window size from the previous session
 
 #### v2.2.1
 
