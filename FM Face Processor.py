@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FM Face Processor (JA/EN, 全自動OCR / ダークモード)
+FM Face Processor (JA/EN/TR, 全自動OCR / ダークモード)
 ===================================================
-日本語・英語をボタンで切替できます (toggle JA/EN with the top-right button).
+日本語・英語・トルコ語を右上で選べます (select JA/EN/TR at the top right).
 顔画像と「ID入りスクショ」を1つのフォルダに混ぜて入れて「実行」すると:
   1. 各画像を OCR で見て「IDスクショ」か「顔写真」かを自動仕分け
   2. IDスクショから person ID（例: ID: 50053056）を読み取る
@@ -64,7 +64,7 @@ except Exception:  # noqa: BLE001
     HAS_DND = False
 
 SUPPORTED_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
-APP_VERSION = "v2.3.0"
+APP_VERSION = "v2.3.1"
 APP_ICON_FILENAME = "fm_face_processor.ico"
 APP_USER_MODEL_ID = "kumajia.FMFaceProcessor"
 # 「ID」に続く数字（FMのperson ID）を拾う
@@ -72,17 +72,20 @@ APP_USER_MODEL_ID = "kumajia.FMFaceProcessor"
 # のような文字列で年号や背番号を先に拾ってしまうため下限を上げてある。
 ID_RE = re.compile(r"id[^0-9]{0,6}(\d{5,})", re.IGNORECASE)
 
-# ----- 言語切替（日本語/英語）-----
+# ----- 言語切替（日本語/英語/トルコ語）-----
+LANGUAGES = {"ja": "日本語", "en": "English", "tr": "Türkçe"}
 _LANG = "ja"
 
 
 def set_lang(lang):
     global _LANG
-    _LANG = "en" if lang == "en" else "ja"
+    _LANG = lang if lang in LANGUAGES else "ja"
 
 
-def t(ja, en):
-    """現在の言語に応じて日本語か英語を返す。"""
+def t(ja, en, tr=None):
+    """選択中の言語を返す。未翻訳のトルコ語は英語にフォールバックする。"""
+    if _LANG == "tr":
+        return tr if tr is not None else en
     return en if _LANG == "en" else ja
 
 
@@ -143,22 +146,22 @@ def _get_esrgan(log):
             import onnxruntime as ort
         except Exception as e:  # noqa: BLE001
             log(t(f"  [i] AI高画質化は使えません（onnxruntime未導入）。通常拡大で続行: {e}",
-                  f"  [i] AI upscale unavailable (no onnxruntime). Using normal resize: {e}"))
+                  f"  [i] AI upscale unavailable (no onnxruntime). Using normal resize: {e}", f'  [i] Yapay zekâ ile büyütme kullanılamıyor (onnxruntime yok). Normal büyütme kullanılıyor: {e}'))
             return None
         path = _find_esrgan_model()
         if not path:
             log(t("  [i] AI高画質化モデル(.onnx)が見つかりません。通常拡大で続行します。",
-                  "  [i] AI upscale model (.onnx) not found. Using normal resize."))
+                  "  [i] AI upscale model (.onnx) not found. Using normal resize.", '  [i] Yapay zekâ büyütme modeli (.onnx) bulunamadı. Normal büyütme kullanılıyor.'))
             return None
         try:
             so = _ort_options()
             _esrgan_sess = ort.InferenceSession(path, sess_options=so, providers=["CPUExecutionProvider"]) if so \
                 else ort.InferenceSession(path, providers=["CPUExecutionProvider"])
             log(t("  [i] AI高画質化（Real-ESRGAN）を使用します。",
-                  "  [i] Using AI upscale (Real-ESRGAN)."))
+                  "  [i] Using AI upscale (Real-ESRGAN).", '  [i] Yapay zekâ ile büyütme (Real-ESRGAN) kullanılıyor.'))
         except Exception as e:  # noqa: BLE001
             log(t(f"  [!] AI高画質化モデルを読み込めませんでした（通常拡大で続行）: {e}",
-                  f"  [!] Could not load AI upscale model (using normal resize): {e}"))
+                  f"  [!] Could not load AI upscale model (using normal resize): {e}", f'  [!] Yapay zekâ büyütme modeli yüklenemedi (normal büyütme kullanılıyor): {e}'))
             _esrgan_sess = None
         return _esrgan_sess
 
@@ -261,7 +264,7 @@ def upscale(img, factor, model_name, use_ai, log):
                 return out
             except Exception as e:  # noqa: BLE001
                 log(t(f"  [!] AI高画質化中にエラー -> 通常拡大 ({e})",
-                      f"  [!] Error during AI upscale -> normal resize ({e})"))
+                      f"  [!] Error during AI upscale -> normal resize ({e})", f'  [!] Yapay zekâ ile büyütme sırasında hata -> normal büyütme ({e})'))
     w, h = img.size
     return img.resize((int(w * factor), int(h * factor)), Image.LANCZOS)
 
@@ -386,7 +389,7 @@ def _removebg_mask_is_incomplete(img, face_box=None):
         if face_opaque_ratio is not None and face_opaque_ratio < 0.70:
             return True, t(
                 f"顔領域の保持率が低い（{face_opaque_ratio:.0%}）",
-                f"low face retention ({face_opaque_ratio:.0%})")
+                f"low face retention ({face_opaque_ratio:.0%})", f'yüz yeterince korunmadı ({face_opaque_ratio:.0%})')
 
         # 顔が画像の一部しか占めない素材なのに、ほぼ全体が不透明なら
         # ポスター背景などを人物とまとめて残した可能性が高い。
@@ -394,18 +397,18 @@ def _removebg_mask_is_incomplete(img, face_box=None):
         if small_face and far_background_ratio is not None and far_background_ratio < 0.35:
             return True, t(
                 f"顔から離れた背景が残っている（透明 {far_background_ratio:.1%}）",
-                f"distant background remains ({far_background_ratio:.1%} transparent)")
+                f"distant background remains ({far_background_ratio:.1%} transparent)", f'uzaktaki arka plan kalıntıları mevcut ({far_background_ratio:.1%} şeffaf)')
 
         if small_face and transparent_ratio < 0.05 and opaque_ratio > 0.85:
             return True, t(
                 f"透明部分が少なすぎる（{transparent_ratio:.1%}）",
-                f"too little transparency ({transparent_ratio:.1%})")
+                f"too little transparency ({transparent_ratio:.1%})", f'şeffaflık çok az ({transparent_ratio:.1%})')
 
         # 回転で生じた細い透明三角だけを「背景除去成功」と誤認しない。
         if small_face and transparent_ratio < 0.025:
             return True, t(
                 f"背景がほぼ残っている（透明 {transparent_ratio:.1%}）",
-                f"background mostly remains ({transparent_ratio:.1%} transparent)")
+                f"background mostly remains ({transparent_ratio:.1%} transparent)", f'arka planın büyük kısmı duruyor ({transparent_ratio:.1%} şeffaf)')
 
         return False, ""
     except Exception:  # noqa: BLE001
@@ -447,26 +450,26 @@ def remove_background(img, model_name, alpha_matting=False, log=None, removebg_k
             if incomplete:
                 if log:
                     log(t(f"  [i] remove.bgの切り抜きが不完全なため、ローカルAIで再処理します: {reason}",
-                          f"  [i] remove.bg cutout was incomplete; retrying with local AI: {reason}"))
+                          f"  [i] remove.bg cutout was incomplete; retrying with local AI: {reason}", f'  [i] remove.bg arka planı tam kaldıramadı; yerel yapay zekâ ile yeniden deneniyor: {reason}'))
                 try:
                     return _remove_background_once(img, model_name, alpha_matting)
                 except Exception as local_error:  # noqa: BLE001
                     message = t(
                         f"remove.bgとローカルAIの両方で背景除去に失敗しました: {local_error}",
-                        f"Both remove.bg and local AI background removal failed: {local_error}")
+                        f"Both remove.bg and local AI background removal failed: {local_error}", f'Hem remove.bg hem de yerel yapay zekâ ile arka plan kaldırma başarısız oldu: {local_error}')
                     if log:
                         log(t(f"  [!] {message}（この画像は保存しません）",
-                              f"  [!] {message} (this image will not be saved)"))
+                              f"  [!] {message} (this image will not be saved)", f'  [!] {message} (bu görüntü kaydedilmeyecek)'))
                     raise BackgroundRemovalError(message) from local_error
             if log:
-                log(t("  [i] remove.bg で背景を除去しました", "  [i] Background removed via remove.bg"))
+                log(t("  [i] remove.bg で背景を除去しました", "  [i] Background removed via remove.bg", '  [i] Arka plan remove.bg ile kaldırıldı'))
             return out
         except BackgroundRemovalError:
             raise
         except Exception as e:  # noqa: BLE001
             if log:
                 log(t(f"  [i] remove.bg が使えませんでした（ローカルAIで続行）: {e}",
-                      f"  [i] remove.bg unavailable (using local AI): {e}"))
+                      f"  [i] remove.bg unavailable (using local AI): {e}", f'  [i] remove.bg kullanılamıyor (yerel yapay zekâ kullanılıyor): {e}'))
     try:
         return _remove_background_once(img, model_name, alpha_matting)
     except Exception as e:  # noqa: BLE001
@@ -479,7 +482,7 @@ def remove_background(img, model_name, alpha_matting=False, log=None, removebg_k
             gc.collect()
             if log:
                 log(t("  [i] メモリ不足のため、軽量モデル(u2net)で再試行します…",
-                      "  [i] Out of memory; retrying with the lighter u2net model…"))
+                      "  [i] Out of memory; retrying with the lighter u2net model…", '  [i] Bellek yetersiz; daha hafif u2net modeliyle yeniden deneniyor…'))
             return _remove_background_once(img, "u2net", alpha_matting, max_side=1280)
         raise
 
@@ -692,19 +695,19 @@ def _get_yunet(log):
             import cv2
             if not hasattr(cv2, "FaceDetectorYN"):
                 log(t("  [i] 高精度の顔検出は使えません（OpenCVが古い）。簡易検出で続行します。",
-                      "  [i] High-accuracy face detection unavailable (old OpenCV). Using basic detection."))
+                      "  [i] High-accuracy face detection unavailable (old OpenCV). Using basic detection.", '  [i] Yüksek doğruluklu yüz algılama kullanılamıyor (eski OpenCV). Temel algılama kullanılıyor.'))
                 return None
             path = _find_yunet_model()
             if not path:
                 log(t("  [i] 顔検出モデル(.onnx)が見つかりません。簡易検出で続行します。",
-                      "  [i] Face model (.onnx) not found. Using basic detection."))
+                      "  [i] Face model (.onnx) not found. Using basic detection.", '  [i] Yüz modeli (.onnx) bulunamadı. Temel algılama kullanılıyor.'))
                 return None
             _yunet = cv2.FaceDetectorYN.create(path, "", (320, 320), 0.6, 0.3, 5000)
             log(t("  [i] 高精度の顔検出（YuNet）を使用します。",
-                  "  [i] Using high-accuracy face detection (YuNet)."))
+                  "  [i] Using high-accuracy face detection (YuNet).", '  [i] Yüksek doğruluklu yüz algılama (YuNet) kullanılıyor.'))
         except Exception as e:  # noqa: BLE001
             log(t(f"  [i] 顔検出モデルを読み込めませんでした（簡易検出で続行）: {e}",
-                  f"  [i] Could not load face model (using basic detection): {e}"))
+                  f"  [i] Could not load face model (using basic detection): {e}", f'  [i] Yüz modeli yüklenemedi (temel algılama kullanılıyor): {e}'))
             _yunet = None
         return _yunet
 
@@ -810,7 +813,7 @@ def detect_face_box(img, log):
         import cv2  # noqa: F401
         import numpy as np
     except Exception as e:  # noqa: BLE001
-        log(t(f"  [i] OpenCV未導入のため顔トリミングをスキップ ({e})", f"  [i] OpenCV not installed; skipping face crop ({e})"))
+        log(t(f"  [i] OpenCV未導入のため顔トリミングをスキップ ({e})", f"  [i] OpenCV not installed; skipping face crop ({e})", f'  [i] OpenCV yüklü değil; yüz kırpma atlanıyor ({e})'))
         return None
     yb = detect_face_box_yunet(img, log)
     if yb is not None:
@@ -860,7 +863,7 @@ def detect_face_box(img, log):
         return ((int(round(x)), int(round(y)), int(round(w)), int(round(h))),
                 None, None, None, None, None)
     except Exception as e:  # noqa: BLE001
-        log(t(f"  [i] 顔検出に失敗（全体を使用）: {e}", f"  [i] Face detection failed (using whole image): {e}"))
+        log(t(f"  [i] 顔検出に失敗（全体を使用）: {e}", f"  [i] Face detection failed (using whole image): {e}", f'  [i] Yüz algılanamadı (görüntünün tamamı kullanılıyor): {e}'))
         return None
 
 
@@ -893,7 +896,7 @@ def straighten_face(img, det, already_cutout, log=None):
     if abs(eye_angle) > AUTO_LEVEL_MAX_DEG:
         if log is not None:
             log(t(f"  [i] 顔の傾き {eye_angle:+.1f}° は大きすぎるため自動補正をスキップ",
-                  f"  [i] Skipping auto-level: face angle {eye_angle:+.1f}° is too large"))
+                  f"  [i] Skipping auto-level: face angle {eye_angle:+.1f}° is too large", f'  [i] Otomatik hizalama atlandı: {eye_angle:+.1f}° yüz açısı çok büyük'))
         return img, det
 
     from PIL import Image
@@ -911,7 +914,7 @@ def straighten_face(img, det, already_cutout, log=None):
     if log is not None:
         suffix = "" if residual is None else f" -> {residual:+.1f}°"
         log(t(f"  [i] 両目を基準に顔を水平補正: {eye_angle:+.1f}°{suffix}",
-              f"  [i] Auto-levelled face from the eyes: {eye_angle:+.1f}°{suffix}"))
+              f"  [i] Auto-levelled face from the eyes: {eye_angle:+.1f}°{suffix}", f'  [i] Yüz, gözlere göre hizalandı: {eye_angle:+.1f}°{suffix}'))
     return rotated, redetected
 
 
@@ -1219,7 +1222,7 @@ def crop_around_face(img, box, size_factor, neck, log=None,
             if estimated_chin > chin:
                 if log is not None and estimated_chin - chin > h * 0.02:
                     log(t(f"  [i] 口の位置から顎を補正: {chin:.0f} -> {estimated_chin:.0f}px",
-                          f"  [i] Corrected chin from mouth landmarks: {chin:.0f} -> {estimated_chin:.0f}px"))
+                          f"  [i] Corrected chin from mouth landmarks: {chin:.0f} -> {estimated_chin:.0f}px", f'  [i] Çene konumu ağız noktalarına göre düzeltildi: {chin:.0f} -> {estimated_chin:.0f} piksel'))
                 chin = estimated_chin
     canvas_h = size_factor * h
 
@@ -1272,7 +1275,7 @@ def crop_around_face(img, box, size_factor, neck, log=None,
             if need > canvas_h:
                 if log is not None:
                     log(t(f"  [i] 頭頂が切れるためキャンバスを拡大: {canvas_h:.0f} -> {need:.0f}px",
-                          f"  [i] Enlarging canvas to avoid cutting the crown: {canvas_h:.0f} -> {need:.0f}px"))
+                          f"  [i] Enlarging canvas to avoid cutting the crown: {canvas_h:.0f} -> {need:.0f}px", f'  [i] Başın üstünün kesilmemesi için tuval büyütülüyor: {canvas_h:.0f} -> {need:.0f} piksel'))
                 canvas_h = need
             top = anchor_y - canvas_h * anchor_ratio
         else:
@@ -1300,7 +1303,7 @@ def crop_around_face(img, box, size_factor, neck, log=None,
                 canvas_h = bottom - top
                 if log is not None:
                     log(t(f"  [i] 襟を残すためキャンバスを拡大: {old_h:.0f} -> {canvas_h:.0f}px",
-                          f"  [i] Enlarging canvas to retain the collar: {old_h:.0f} -> {canvas_h:.0f}px"))
+                          f"  [i] Enlarging canvas to retain the collar: {old_h:.0f} -> {canvas_h:.0f}px", f'  [i] Yakayı korumak için tuval büyütülüyor: {old_h:.0f} -> {canvas_h:.0f} piksel'))
 
         # 投稿ガイドに合わせ、顎下の余白を必要以上に残さない。
         # 正方形の大きさは変えず、切り抜き枠全体を上へ移動するので、
@@ -1315,7 +1318,7 @@ def crop_around_face(img, box, size_factor, neck, log=None,
             bottom -= shift
             if log is not None and shift > canvas_h * 0.01:
                 log(t(f"  [i] 顎下の余白を詰めました: {shift:.0f}px",
-                      f"  [i] Tightened the space below the chin by {shift:.0f}px"))
+                      f"  [i] Tightened the space below the chin by {shift:.0f}px", f'  [i] Çene altındaki boşluk {shift:.0f} piksel azaltıldı'))
 
     top = int(round(top))
     side = max(1, int(round(bottom - top)))
@@ -1327,7 +1330,7 @@ def crop_around_face(img, box, size_factor, neck, log=None,
     if sil_cx is not None:
         if log is not None and abs(sil_cx - cx) > side * 0.02:
             log(t(f"  [i] 水平中心をシルエット基準に補正: {cx:.0f} -> {sil_cx:.0f}",
-                  f"  [i] Horizontal center corrected to silhouette: {cx:.0f} -> {sil_cx:.0f}"))
+                  f"  [i] Horizontal center corrected to silhouette: {cx:.0f} -> {sil_cx:.0f}", f'  [i] Yatay merkez silüete göre düzeltildi: {cx:.0f} -> {sil_cx:.0f}'))
         cx = sil_cx
     left = int(round(cx - side / 2.0))
     canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
@@ -1355,7 +1358,7 @@ def get_ocr_reader(log):
     # 1) RapidOCR（軽量・torch不要・推奨）
     try:
         from rapidocr_onnxruntime import RapidOCR
-        log(t("  [i] RapidOCR を初期化中…", "  [i] Initializing RapidOCR…"))
+        log(t("  [i] RapidOCR を初期化中…", "  [i] Initializing RapidOCR…", '  [i] RapidOCR başlatılıyor…'))
         _ocr_reader = RapidOCR()
         _ocr_backend = "rapidocr"
         return _ocr_reader
@@ -1370,7 +1373,7 @@ def get_ocr_reader(log):
             gpu = bool(torch.cuda.is_available())
         except Exception:  # noqa: BLE001
             gpu = False
-        log(t("  [i] EasyOCR を初期化中…（初回はモデルDLで少し時間がかかります）", "  [i] Initializing EasyOCR… (first run downloads models)"))
+        log(t("  [i] EasyOCR を初期化中…（初回はモデルDLで少し時間がかかります）", "  [i] Initializing EasyOCR… (first run downloads models)", '  [i] EasyOCR başlatılıyor… (ilk çalıştırmada modeller indirilir)'))
         _ocr_reader = easyocr.Reader(["en"], gpu=gpu)
         _ocr_backend = "easyocr"
         return _ocr_reader
@@ -1384,7 +1387,7 @@ def get_ocr_reader(log):
         "No OCR engine found. Please run\n"
         "    py -3.12 -m pip install rapidocr-onnxruntime\n"
         "(lightweight, no torch needed).\n"
-        '(Or uncheck "Auto-read ID" to use filename-as-ID instead.)'))
+        '(Or uncheck "Auto-read ID" to use filename-as-ID instead.)', 'OCR motoru bulunamadı. Lütfen şu komutu çalıştırın:\n    py -3.12 -m pip install rapidocr-onnxruntime\n(Hafiftir, torch gerektirmez.)\n(Veya dosya adını ID olarak kullanmak için "ID’yi otomatik oku" seçeneğini kapatın.)'))
 
 
 # これより横長の画像だけ OCR にかける（顔写真=縦長/正方は即「顔」と判定して高速化）
@@ -1419,7 +1422,7 @@ def classify(path, reader, log):
     except Exception as e:  # noqa: BLE001
         # 壊れた画像を顔として扱うと、実在するIDのペア枠を食い潰してしまう
         log(t(f"  [!] 画像を開けません（スキップ）: {Path(path).name}: {e}",
-              f"  [!] Cannot open image (skipped): {Path(path).name}: {e}"))
+              f"  [!] Cannot open image (skipped): {Path(path).name}: {e}", f'  [!] Görüntü açılamadı (atlandı): {Path(path).name}: {e}'))
         return ("skip", None)
     aspect = w / h if h else 1
     # 縦長〜正方形は顔写真とみなして OCR しない（大幅に高速化）
@@ -1557,7 +1560,7 @@ def send_to_trash(path):
         return res == 0
     # 3) macOS/Linux で send2trash も無い場合
     raise RuntimeError(t("ごみ箱に送れませんでした（send2trash 未導入）",
-                         "Could not move to Recycle Bin (send2trash not installed)"))
+                         "Could not move to Recycle Bin (send2trash not installed)", 'Geri Dönüşüm Kutusu’na taşınamadı (send2trash yüklü değil)'))
 
 
 def _source_image_delete_targets(input_dir, output_dir=None):
@@ -1619,7 +1622,7 @@ def _read_config_text(cfg_path):
         except (UnicodeDecodeError, LookupError):
             continue
     raise ValueError(t("config.xml の文字コードを判別できません（UTF-8 で保存し直してください）",
-                       "Cannot determine the encoding of config.xml (please re-save it as UTF-8)"))
+                       "Cannot determine the encoding of config.xml (please re-save it as UTF-8)", 'config.xml dosyasının kodlaması belirlenemedi (lütfen UTF-8 olarak yeniden kaydedin)'))
 
 
 def _timestamped_backup(path):
@@ -1807,10 +1810,10 @@ def process_one(path, out_path, opts, log):
         box, eye_mid_y, eye_mid_x, nose_x, eye_angle, mouth_mid_y = det
         if debug:
             log(t(f"  [debug] 顔box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x} mouth_y={mouth_mid_y} angle={eye_angle}",
-                  f"  [debug] face box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x} mouth_y={mouth_mid_y} angle={eye_angle}"))
+                  f"  [debug] face box={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x} mouth_y={mouth_mid_y} angle={eye_angle}", f'  [debug] yüz kutusu={box} eye_y={eye_mid_y} eye_x={eye_mid_x} nose_x={nose_x} mouth_y={mouth_mid_y} açı={eye_angle}'))
     elif debug and opts.get("face_crop", True):
         log(t("  [debug] 顔を検出できませんでした（全体を使用）",
-              "  [debug] face not detected (using full image)"))
+              "  [debug] face not detected (using full image)", '  [debug] yüz algılanamadı (görüntünün tamamı kullanılıyor)'))
 
     # --- 2. 背景除去（サイズは変わらない）---
     if opts.get("bg_removal", True):
@@ -1818,7 +1821,7 @@ def process_one(path, out_path, opts, log):
             # 既に背景が抜かれている画像を再処理すると、透明部＝黒として扱われ
             # 黒髪などが背景と誤認されて欠ける。そのまま通す。
             log(t("  [i] 入力が既に背景除去済みのため、背景除去をスキップします",
-                  "  [i] Input is already cut out; skipping background removal."))
+                  "  [i] Input is already cut out; skipping background removal.", '  [i] Girdinin arka planı zaten kaldırılmış; arka plan kaldırma atlanıyor.'))
         else:
             img = remove_background(img, opts.get("rembg_model", "isnet-general-use"),
                                     alpha_matting=opts.get("alpha_matting", False), log=log,
@@ -1853,14 +1856,14 @@ def process_one(path, out_path, opts, log):
                 img = adjusted
         if decision == "cancel":
             log(t("  [i] プレビューでキャンセルされたため、保存しませんでした",
-                  "  [i] Preview was cancelled; the image was not saved"))
+                  "  [i] Preview was cancelled; the image was not saved", '  [i] Önizleme iptal edildi; görüntü kaydedilmedi'))
             cancel = opts.get("_cancel")
             if cancel is not None:
                 cancel.set()
             return False
         if decision == "skip":
             log(t("  [i] プレビューでスキップされたため、保存しませんでした",
-                  "  [i] Skipped in preview; the image was not saved"))
+                  "  [i] Skipped in preview; the image was not saved", '  [i] Önizlemede atlandı; görüntü kaydedilmedi'))
             return False
 
     _atomic_save_png(img, out_path)
@@ -1870,11 +1873,11 @@ def process_one(path, out_path, opts, log):
 def process_folder(opts, log, progress=None):
     in_dir = Path(opts["input"]); out_dir = Path(opts["output"])
     if not in_dir.is_dir():
-        log(t(f"[!] 入力フォルダがありません: {in_dir}", f"[!] Input folder not found: {in_dir}")); return
+        log(t(f"[!] 入力フォルダがありません: {in_dir}", f"[!] Input folder not found: {in_dir}", f'[!] Girdi klasörü bulunamadı: {in_dir}')); return
     try:
         if in_dir.resolve() == out_dir.resolve():
             log(t("[!] 入力フォルダと出力フォルダは別にしてください。元画像の上書きを防ぐため処理を中止しました。",
-                  "[!] Input and output folders must differ. Processing was stopped to protect source images."))
+                  "[!] Input and output folders must differ. Processing was stopped to protect source images.", '[!] Girdi ve çıktı klasörleri farklı olmalıdır. Kaynak görüntüleri korumak için işlem durduruldu.'))
             return
     except Exception:  # noqa: BLE001
         pass
@@ -1900,17 +1903,17 @@ def process_folder(opts, log, progress=None):
     files = sorted(f for f in in_dir.iterdir() if f.suffix.lower() in SUPPORTED_EXT)
 
     if subdirs:
-        log(t(f"サブフォルダ（ペア）モード: {len(subdirs)} フォルダ", f"Subfolder (pair) mode: {len(subdirs)} folders"))
+        log(t(f"サブフォルダ（ペア）モード: {len(subdirs)} フォルダ", f"Subfolder (pair) mode: {len(subdirs)} folders", f'Alt klasör (çift) modu: {len(subdirs)} klasör'))
         if files:
             # 以前はここが無言だったので、紛れ込んだフォルダ1つで全画像が無視されても気づけなかった
             log(t(f"  [!] 直下の画像 {len(files)} 枚はサブフォルダモードでは無視されます: ",
-                  f"  [!] {len(files)} loose image(s) are ignored in subfolder mode: ")
+                  f"  [!] {len(files)} loose image(s) are ignored in subfolder mode: ", f'  [!] Alt klasör modunda doğrudan girdi klasöründeki {len(files)} görüntü yok sayılır: ')
                 + ", ".join(f.name for f in files[:10]) + (" …" if len(files) > 10 else ""))
         _run_subfolder_mode(subdirs, out_dir, opts, log, progress)
         return
 
     if not files:
-        log(t(f"[!] 対応画像が見つかりません: {in_dir}", f"[!] No supported images found: {in_dir}")); return
+        log(t(f"[!] 対応画像が見つかりません: {in_dir}", f"[!] No supported images found: {in_dir}", f'[!] Desteklenen görüntü bulunamadı: {in_dir}')); return
     if opts["ocr_id"]:
         _run_ocr_mode(files, out_dir, opts, log, progress)
     else:
@@ -1924,14 +1927,14 @@ def _run_subfolder_mode(subdirs, out_dir, opts, log, progress):
         try:
             reader = get_ocr_reader(log)
         except Exception as e:  # noqa: BLE001
-            log(t(f"  [i] OCR使用不可（フォルダ名をIDとして使用）: {e}", f"  [i] OCR unavailable (using folder name as ID): {e}"))
+            log(t(f"  [i] OCR使用不可（フォルダ名をIDとして使用）: {e}", f"  [i] OCR unavailable (using folder name as ID): {e}", f'  [i] OCR kullanılamıyor (klasör adı ID olarak kullanılıyor): {e}'))
             reader = None
 
     pairs = []  # (face_path, id_number, subname)
     for sub in subdirs:
         imgs = sorted(f for f in sub.iterdir() if f.suffix.lower() in SUPPORTED_EXT)
         if not imgs:
-            log(t(f"  [!] {sub.name}: 画像なし、スキップ", f"  [!] {sub.name}: no images, skipped")); continue
+            log(t(f"  [!] {sub.name}: 画像なし、スキップ", f"  [!] {sub.name}: no images, skipped", f'  [!] {sub.name}: görüntü yok, atlandı')); continue
         id_num, faces = None, []
         # ファイル名が数字の画像があれば、それをIDとして使う（IDスクショ不要・OCRも省略）
         named = [f for f in imgs if f.stem.isdigit()]
@@ -1956,17 +1959,17 @@ def _run_subfolder_mode(subdirs, out_dir, opts, log, progress):
             id_num = sub.name
             faces = faces or imgs
         if id_num is None:
-            log(t(f"  [!] {sub.name}: IDを読み取れず、スキップ", f"  [!] {sub.name}: could not read ID, skipped")); continue
+            log(t(f"  [!] {sub.name}: IDを読み取れず、スキップ", f"  [!] {sub.name}: could not read ID, skipped", f'  [!] {sub.name}: ID okunamadı, atlandı')); continue
         if not faces:
-            log(t(f"  [!] {sub.name}: 顔写真が見つからず、スキップ", f"  [!] {sub.name}: no face image found, skipped")); continue
+            log(t(f"  [!] {sub.name}: 顔写真が見つからず、スキップ", f"  [!] {sub.name}: no face image found, skipped", f'  [!] {sub.name}: yüz fotoğrafı bulunamadı, atlandı')); continue
         # 「一番大きい画像＝顔」はFMのスクショ(1920x1080)が顔写真より大きいので危険。
         # ポートレートらしさ（縦長ほど高スコア）を主、面積を従にして選ぶ。
         face = max(faces, key=_portrait_score)
-        log(t(f"  [{sub.name}] 顔: {face.name}  =>  {id_num}.png", f"  [{sub.name}] face: {face.name}  =>  {id_num}.png"))
+        log(t(f"  [{sub.name}] 顔: {face.name}  =>  {id_num}.png", f"  [{sub.name}] face: {face.name}  =>  {id_num}.png", f'  [{sub.name}] yüz: {face.name}  =>  {id_num}.png'))
         pairs.append((face, id_num, sub.name))
 
     if not pairs:
-        log(t("[!] 有効なペアがありませんでした。", "[!] No valid pairs found.")); return
+        log(t("[!] 有効なペアがありませんでした。", "[!] No valid pairs found.", '[!] Geçerli bir çift bulunamadı.')); return
 
     cancel = opts.get("_cancel")
     workers = max(1, int(opts.get("workers", 1)))
@@ -1981,13 +1984,13 @@ def _run_subfolder_mode(subdirs, out_dir, opts, log, progress):
             return
         with seen_lock:
             if uid in seen:
-                log(t(f"[skip] ID重複: {uid}（{subname}）", f"[skip] duplicate ID: {uid} ({subname})"))
+                log(t(f"[skip] ID重複: {uid}（{subname}）", f"[skip] duplicate ID: {uid} ({subname})", f'[atlandı] yinelenen ID: {uid} ({subname})'))
                 return
             seen.add(uid)
         out_name = out_filename(uid, opts)
         out_path = out_dir / out_name
         if out_path.exists() and not opts["overwrite"]:
-            log(t(f"[{idx}/{total}] [skip] 既存: {out_name}", f"[{idx}/{total}] [skip] exists: {out_name}"))
+            log(t(f"[{idx}/{total}] [skip] 既存: {out_name}", f"[{idx}/{total}] [skip] exists: {out_name}", f'[{idx}/{total}] [atlandı] zaten mevcut: {out_name}'))
             with uids_lock: uids.append(uid)
             with done_lock:
                 done[0] += 1
@@ -1999,14 +2002,14 @@ def _run_subfolder_mode(subdirs, out_dir, opts, log, progress):
         try:
             ok = process_one(face, out_path, opts, log)
         except Exception as e:  # noqa: BLE001
-            log(t(f"  [!] 失敗: {e}", f"  [!] failed: {e}"))
+            log(t(f"  [!] 失敗: {e}", f"  [!] failed: {e}", f'  [!] başarısız: {e}'))
             ok = False
         with done_lock:
             done[0] += 1
             if progress: progress(done[0], total)
         if ok:
             elapsed = time.monotonic() - t0
-            log(t(f"  [i] 完了 ({elapsed:.1f}秒)", f"  [i] done ({elapsed:.1f}s)"))
+            log(t(f"  [i] 完了 ({elapsed:.1f}秒)", f"  [i] done ({elapsed:.1f}s)", f'  [i] tamamlandı ({elapsed:.1f} sn)'))
             with uids_lock: uids.append(uid)
 
     use_parallel = workers > 1 and not opts.get("_preview")
@@ -2047,17 +2050,17 @@ def _run_uid_list(files, uid_list, out_dir, opts, log, progress, require_digits=
         if require_digits and not uid.isdigit():
             # 数字以外は config.xml に書いてもFMが参照しないパスになる
             log(t(f"[skip] IDが数字ではありません（FMのperson IDとして使えません）: {f.name} -> {uid!r}",
-                  f"[skip] ID is not numeric (not a valid FM person ID): {f.name} -> {uid!r}"))
+                  f"[skip] ID is not numeric (not a valid FM person ID): {f.name} -> {uid!r}", f'[atlandı] ID sayısal değil (geçerli bir FM kişi ID’si değil): {f.name} -> {uid!r}'))
             return
         with seen_lock:
             if uid in seen:
-                log(t(f"[skip] ID重複: {uid}（{f.name}）", f"[skip] duplicate ID: {uid} ({f.name})"))
+                log(t(f"[skip] ID重複: {uid}（{f.name}）", f"[skip] duplicate ID: {uid} ({f.name})", f'[atlandı] yinelenen ID: {uid} ({f.name})'))
                 return
             seen.add(uid)
         out_name = out_filename(uid, opts)
         out_path = out_dir / out_name
         if out_path.exists() and not opts["overwrite"]:
-            log(t(f"[{idx}/{total}] [skip] 既存: {out_name}", f"[{idx}/{total}] [skip] exists: {out_name}"))
+            log(t(f"[{idx}/{total}] [skip] 既存: {out_name}", f"[{idx}/{total}] [skip] exists: {out_name}", f'[{idx}/{total}] [atlandı] zaten mevcut: {out_name}'))
             with uids_lock: uids.append(uid)
             with done_lock:
                 done[0] += 1
@@ -2069,14 +2072,14 @@ def _run_uid_list(files, uid_list, out_dir, opts, log, progress, require_digits=
         try:
             ok = process_one(f, out_path, opts, log)
         except Exception as e:  # noqa: BLE001
-            log(t(f"  [!] 失敗: {e}", f"  [!] failed: {e}"))
+            log(t(f"  [!] 失敗: {e}", f"  [!] failed: {e}", f'  [!] başarısız: {e}'))
             ok = False
         with done_lock:
             done[0] += 1
             if progress: progress(done[0], total)
         if ok:
             elapsed = time.monotonic() - t0
-            log(t(f"  [i] 完了 ({elapsed:.1f}秒)", f"  [i] done ({elapsed:.1f}s)"))
+            log(t(f"  [i] 完了 ({elapsed:.1f}秒)", f"  [i] done ({elapsed:.1f}s)", f'  [i] tamamlandı ({elapsed:.1f} sn)'))
             with uids_lock: uids.append(uid)
 
     use_parallel = workers > 1 and not opts.get("_preview")
@@ -2095,7 +2098,7 @@ def _run_uid_list(files, uid_list, out_dir, opts, log, progress, require_digits=
 
 def _run_ocr_mode(files, out_dir, opts, log, progress):
     reader = get_ocr_reader(log)  # easyocr 未導入なら例外
-    log(t(f"画像を仕分け中…（{len(files)}枚／横長のスクショのみOCR）", f"Sorting images… ({len(files)} files; OCR only on wide screenshots)"))
+    log(t(f"画像を仕分け中…（{len(files)}枚／横長のスクショのみOCR）", f"Sorting images… ({len(files)} files; OCR only on wide screenshots)", f'Görüntüler sınıflandırılıyor… ({len(files)} dosya; OCR yalnızca geniş ekran görüntülerine uygulanır)'))
     faces, ids = [], []
     for i, f in enumerate(files, 1):
         kind, number = classify(f, reader, log)
@@ -2106,32 +2109,32 @@ def _run_ocr_mode(files, out_dir, opts, log, progress):
             log(f"  [ID ] {f.name}  ->  ID: {number}")
             ids.append({"path": f, "mtime": mtime, "number": number})
         else:
-            log(t(f"  [顔 ] {f.name}", f"  [face] {f.name}"))
+            log(t(f"  [顔 ] {f.name}", f"  [face] {f.name}", f'  [yüz] {f.name}'))
             faces.append({"path": f, "mtime": mtime})
 
     if not ids:
-        log(t("[!] IDスクショが1枚も見つかりませんでした。ID入りのスクショを入れてください。", "[!] No ID screenshots found. Please include screenshots that show the ID."))
+        log(t("[!] IDスクショが1枚も見つかりませんでした。ID入りのスクショを入れてください。", "[!] No ID screenshots found. Please include screenshots that show the ID.", '[!] ID içeren ekran görüntüsü bulunamadı. Lütfen ID’nin göründüğü ekran görüntülerini ekleyin.'))
         return
     if not faces:
-        log(t("[!] 顔写真が1枚も見つかりませんでした。", "[!] No face images found."))
+        log(t("[!] 顔写真が1枚も見つかりませんでした。", "[!] No face images found.", '[!] Yüz fotoğrafı bulunamadı.'))
         return
 
     pairs, leftover, unpaired_ids = pair_by_time(faces, ids)
-    log(t(f"\nペアリング結果: {len(pairs)} 組", f"\nPairing result: {len(pairs)} pair(s)"))
+    log(t(f"\nペアリング結果: {len(pairs)} 組", f"\nPairing result: {len(pairs)} pair(s)", f'\nEşleştirme sonucu: {len(pairs)} çift'))
     for face, idd in pairs:
-        log(t(f"  顔: {face['path'].name}  <->  ID: {idd['path'].name}  =>  {idd['number']}.png", f"  face: {face['path'].name}  <->  ID: {idd['path'].name}  =>  {idd['number']}.png"))
+        log(t(f"  顔: {face['path'].name}  <->  ID: {idd['path'].name}  =>  {idd['number']}.png", f"  face: {face['path'].name}  <->  ID: {idd['path'].name}  =>  {idd['number']}.png", f"  yüz: {face['path'].name}  <->  ID: {idd['path'].name}  =>  {idd['number']}.png"))
     if leftover:
         log(t(f"  [!] 相方の見つからない顔 {len(leftover)} 枚: ",
-              f"  [!] {len(leftover)} face(s) with no matching ID: ")
+              f"  [!] {len(leftover)} face(s) with no matching ID: ", f'  [!] Eşleşen ID’si olmayan {len(leftover)} yüz: ')
             + ", ".join(x["path"].name for x in leftover))
     if unpaired_ids:
         # 以前はここが黙って捨てられていて、出力されない選手に気づけなかった
         log(t(f"  [!] 相方の見つからないID {len(unpaired_ids)} 件（撮影時刻が"
               f"{int(MAX_PAIR_GAP_SEC)}秒以上離れています）: ",
               f"  [!] {len(unpaired_ids)} ID(s) with no matching face "
-              f"(more than {int(MAX_PAIR_GAP_SEC)}s apart): ")
+              f"(more than {int(MAX_PAIR_GAP_SEC)}s apart): ", f'  [!] Eşleşen yüzü olmayan {len(unpaired_ids)} ID (zaman farkı {int(MAX_PAIR_GAP_SEC)} saniyeden fazla): ')
             + ", ".join(f"{x['number']}({x['path'].name})" for x in unpaired_ids))
-    log(t("  ※ 取り違えが無いか、上の対応を一度確認してください。\n", "  * Please double-check the pairings above for mismatches.\n"))
+    log(t("  ※ 取り違えが無いか、上の対応を一度確認してください。\n", "  * Please double-check the pairings above for mismatches.\n", '  * Lütfen yukarıdaki eşleştirmelerde hata olmadığını kontrol edin.\n'))
 
     cancel = opts.get("_cancel")
     workers = max(1, int(opts.get("workers", 1)))
@@ -2147,13 +2150,13 @@ def _run_ocr_mode(files, out_dir, opts, log, progress):
         uid = idd["number"]
         with seen_lock:
             if uid in seen:
-                log(t(f"[skip] ID重複: {uid}（{face['path'].name}）", f"[skip] duplicate ID: {uid} ({face['path'].name})"))
+                log(t(f"[skip] ID重複: {uid}（{face['path'].name}）", f"[skip] duplicate ID: {uid} ({face['path'].name})", f"[atlandı] yinelenen ID: {uid} ({face['path'].name})"))
                 return
             seen.add(uid)
         out_name = out_filename(uid, opts)
         out_path = out_dir / out_name
         if out_path.exists() and not opts["overwrite"]:
-            log(t(f"[{idx}/{total}] [skip] 既存: {out_name}", f"[{idx}/{total}] [skip] exists: {out_name}"))
+            log(t(f"[{idx}/{total}] [skip] 既存: {out_name}", f"[{idx}/{total}] [skip] exists: {out_name}", f'[{idx}/{total}] [atlandı] zaten mevcut: {out_name}'))
             with uids_lock: uids.append(uid)
             with done_lock:
                 done[0] += 1
@@ -2165,14 +2168,14 @@ def _run_ocr_mode(files, out_dir, opts, log, progress):
         try:
             ok = process_one(face["path"], out_path, opts, log)
         except Exception as e:  # noqa: BLE001
-            log(t(f"  [!] 失敗: {e}", f"  [!] failed: {e}"))
+            log(t(f"  [!] 失敗: {e}", f"  [!] failed: {e}", f'  [!] başarısız: {e}'))
             ok = False
         with done_lock:
             done[0] += 1
             if progress: progress(done[0], total)
         if ok:
             elapsed = time.monotonic() - t0
-            log(t(f"  [i] 完了 ({elapsed:.1f}秒)", f"  [i] done ({elapsed:.1f}s)"))
+            log(t(f"  [i] 完了 ({elapsed:.1f}秒)", f"  [i] done ({elapsed:.1f}s)", f'  [i] tamamlandı ({elapsed:.1f} sn)'))
             with uids_lock: uids.append(uid)
 
     use_parallel = workers > 1 and not opts.get("_preview")
@@ -2194,24 +2197,24 @@ def _finish(uids, out_dir, opts, log):
     cancelled = bool(cancel and cancel.is_set())
     if cancelled:
         log(t(f"\nキャンセルしました: 完了済み {len(uids)} 件を出力 -> {out_dir}",
-              f"\nCancelled: exported {len(uids)} completed file(s) -> {out_dir}"))
+              f"\nCancelled: exported {len(uids)} completed file(s) -> {out_dir}", f'\nİptal edildi: tamamlanan {len(uids)} dosya dışa aktarıldı -> {out_dir}'))
     else:
         log(t(f"\n完了: {len(uids)} 件を出力 -> {out_dir}",
-              f"\nDone: exported {len(uids)} file(s) -> {out_dir}"))
+              f"\nDone: exported {len(uids)} file(s) -> {out_dir}", f'\nTamamlandı: {len(uids)} dosya dışa aktarıldı -> {out_dir}'))
     if opts["make_config"] and uids:
         cfg = out_dir / "config.xml"
         added, total, backup = write_config(uids, cfg, opts.get("config_append", True),
                                             opts.get("newgen", False))
-        tag = t("（newgen: r- 付き）", " (newgen: r- prefix)") if opts.get("newgen", False) else ""
+        tag = t("（newgen: r- 付き）", " (newgen: r- prefix)", ' (newgen: r- öneki)') if opts.get("newgen", False) else ""
         if opts.get("config_append", True):
             log(t(f"config.xml を更新{tag}: 新規 {added} 件 / 合計 {total} 行 -> {cfg}",
-                  f"Updated config.xml{tag}: {added} new / {total} total lines -> {cfg}"))
+                  f"Updated config.xml{tag}: {added} new / {total} total lines -> {cfg}", f'config.xml güncellendi{tag}: {added} yeni / toplam {total} satır -> {cfg}'))
         else:
             log(t(f"config.xml を生成{tag}: {total} 行 -> {cfg}",
-                  f"Generated config.xml{tag}: {total} lines -> {cfg}"))
+                  f"Generated config.xml{tag}: {total} lines -> {cfg}", f'config.xml oluşturuldu{tag}: {total} satır -> {cfg}'))
         if backup is not None:
             log(t(f"既存の config.xml をバックアップしました: {backup.name}",
-                  f"Backed up the previous config.xml: {backup.name}"))
+                  f"Backed up the previous config.xml: {backup.name}", f'Önceki config.xml yedeklendi: {backup.name}'))
     # ログファイルを保存
     lines = opts.get("_log_lines")
     if lines is not None:
@@ -2219,9 +2222,9 @@ def _finish(uids, out_dir, opts, log):
         log_path = out_dir / f"processing_log_{ts}.txt"
         try:
             log_path.write_text("\n".join(lines), encoding="utf-8")
-            log(t(f"ログを保存しました: {log_path.name}", f"Log saved: {log_path.name}"))
+            log(t(f"ログを保存しました: {log_path.name}", f"Log saved: {log_path.name}", f'Günlük kaydedildi: {log_path.name}'))
         except Exception as e:  # noqa: BLE001
-            log(t(f"[!] ログ保存失敗: {e}", f"[!] Log save failed: {e}"))
+            log(t(f"[!] ログ保存失敗: {e}", f"[!] Log save failed: {e}", f'[!] Günlük kaydedilemedi: {e}'))
 
 
 # ==========================================================================
@@ -2422,7 +2425,7 @@ class App(tk.Tk):
                 break
         if d.get("mode") in ("dark", "light"):
             self.mode = d["mode"]
-        if d.get("lang") in ("ja", "en"):
+        if d.get("lang") in LANGUAGES:
             self.lang = d["lang"]
         self.help_seen = bool(d.get("help_seen", False))
         window_size = d.get("window_size", "")
@@ -2510,9 +2513,9 @@ class App(tk.Tk):
         th = getattr(self, "_worker", None)
         if th is not None and th.is_alive():
             if not messagebox.askyesno(
-                    t("確認", "Confirm"),
+                    t("確認", "Confirm", 'Onay'),
                     t("処理中です。中断して終了しますか？（書き込み中のファイルを待ちます）",
-                      "A job is running. Cancel it and quit? (will wait for the file being written)")):
+                      "A job is running. Cancel it and quit? (will wait for the file being written)", 'Bir işlem çalışıyor. İptal edip çıkılsın mı? (yazılmakta olan dosya beklenecek)')):
                 return
             ev = getattr(self, "_cancel_event", None)
             if ev is not None:
@@ -2581,7 +2584,7 @@ class App(tk.Tk):
         else:
             frame.pack_forget()
             marker = "▼"
-        button.config(text=t(f"詳細設定 {marker}", f"Advanced settings {marker}"))
+        button.config(text=t(f"詳細設定 {marker}", f"Advanced settings {marker}", f'Gelişmiş ayarlar {marker}'))
         self.after_idle(self._on_content_configure)
 
     def _toggle_advanced(self):
@@ -2595,13 +2598,13 @@ class App(tk.Tk):
         self._show_id_help()
 
     def _open_online_guide(self):
-        anchor = "%E4%BD%BF%E3%81%84%E6%96%B9" if self.lang == "ja" else "how-to-use"
+        anchor = {"ja": "%E4%BD%BF%E3%81%84%E6%96%B9", "en": "how-to-use", "tr": "türkçe"}[self.lang]
         try:
             webbrowser.open(f"https://github.com/kumajia/FM-Face-Processor#{anchor}")
         except Exception as e:  # noqa: BLE001
             messagebox.showwarning(
-                t("確認", "Notice"),
-                t(f"ブラウザを開けませんでした: {e}", f"Could not open the browser: {e}"))
+                t("確認", "Notice", 'Uyarı'),
+                t(f"ブラウザを開けませんでした: {e}", f"Could not open the browser: {e}", f'Tarayıcı açılamadı: {e}'))
 
     def _show_id_help(self):
         existing = getattr(self, "_help_window", None)
@@ -2613,7 +2616,7 @@ class App(tk.Tk):
         win = tk.Toplevel(self)
         self._help_window = win
         set_app_icon(win)
-        win.title(t("使い方：IDの指定", "Quick guide: providing an ID"))
+        win.title(t("使い方：IDの指定", "Quick guide: providing an ID", 'Hızlı rehber: ID belirtme'))
         win.geometry("560x520")
         win.minsize(440, 400)
         win.transient(self)
@@ -2622,12 +2625,12 @@ class App(tk.Tk):
         body.pack(fill="both", expand=True)
         ttk.Label(
             body,
-            text=t("IDの指定方法は2つあります", "There are two ways to provide an ID"),
+            text=t("IDの指定方法は2つあります", "There are two ways to provide an ID", 'ID belirtmenin iki yolu vardır'),
             style="Header.TLabel").pack(anchor="w", pady=(0, 10))
 
         auto = ttk.LabelFrame(
             body,
-            text=t("方法1：FMの画面からIDを自動で読む", "Method 1: Read the ID from FM automatically"),
+            text=t("方法1：FMの画面からIDを自動で読む", "Method 1: Read the ID from FM automatically", 'Yöntem 1: ID’yi FM’den otomatik oku'),
             padding=10)
         auto.pack(fill="x", pady=(0, 10))
         ttk.Label(
@@ -2636,12 +2639,12 @@ class App(tk.Tk):
                 "FMの環境設定で「ID」を検索し、スキン作成を補助するための画面ID表示を有効にします。"
                 "選手またはスタッフのプロフィールを開き、IDが見えるスクリーンショットと顔写真を同じ入力フォルダへ入れてください。",
                 "In FM Preferences, search for 'ID' and enable the option that shows screen IDs for skinning. "
-                "Open the player or staff profile, then put a screenshot showing the ID and the face photo in the same input folder."),
+                "Open the player or staff profile, then put a screenshot showing the ID and the face photo in the same input folder.", 'FM Tercihleri’nde “ID”yi arayın ve arayüz tasarımı için ekran ID’lerini gösteren seçeneği etkinleştirin. Oyuncu veya personel profilini açın, ardından ID’nin göründüğü bir ekran görüntüsünü ve yüz fotoğrafını aynı girdi klasörüne koyun.'),
             wraplength=500,
             justify="left").pack(fill="x", anchor="w")
 
         sample = ttk.LabelFrame(
-            auto, text=t("IDスクリーンショットの例", "Example ID screenshot"), padding=10)
+            auto, text=t("IDスクリーンショットの例", "Example ID screenshot", 'ID içeren ekran görüntüsü örneği'), padding=10)
         sample.pack(fill="x", pady=(10, 0))
         sample_row = ttk.Frame(sample)
         sample_row.pack(fill="x")
@@ -2651,26 +2654,26 @@ class App(tk.Tk):
         ttk.Label(
             sample,
             text=t("このように人物のIDが読める状態で画面を撮ります。",
-                   "Take the screenshot while the person's ID is readable like this."),
+                   "Take the screenshot while the person's ID is readable like this.", 'Ekran görüntüsünü kişinin ID’si bu şekilde okunabilirken alın.'),
             style="Sub.TLabel").pack(anchor="w", pady=(6, 0))
 
         manual = ttk.LabelFrame(
             body,
-            text=t("方法2：スクリーンショットを使わない", "Method 2: Do not use a screenshot"),
+            text=t("方法2：スクリーンショットを使わない", "Method 2: Do not use a screenshot", 'Yöntem 2: Ekran görüntüsü kullanmadan'),
             padding=10)
         manual.pack(fill="x", pady=(0, 10))
         ttk.Label(
             manual,
             text=t(
                 "「IDを自動で読み取る」をOFFにし、顔写真のファイル名を人物IDにします。\n例：2000468148.jpg",
-                "Turn off 'Auto-read ID' and rename the face photo to the person's ID.\nExample: 2000468148.jpg"),
+                "Turn off 'Auto-read ID' and rename the face photo to the person's ID.\nExample: 2000468148.jpg", '“ID’yi otomatik oku” seçeneğini kapatın ve yüz fotoğrafının adını kişinin ID’siyle değiştirin.\nÖrnek: 2000468148.jpg'),
             wraplength=500,
             justify="left").pack(fill="x", anchor="w")
 
         ttk.Label(
             body,
             text=t("入力と出力には別々のフォルダを選び、準備できたら「実行」を押します。",
-                   "Choose separate input and output folders, then click Run."),
+                   "Choose separate input and output folders, then click Run.", 'Girdi ve çıktı için ayrı klasörler seçin, ardından Başlat’a tıklayın.'),
             wraplength=500,
             justify="left").pack(fill="x", anchor="w", pady=(0, 10))
 
@@ -2678,9 +2681,9 @@ class App(tk.Tk):
         buttons.pack(fill="x", side="bottom")
         ttk.Button(
             buttons,
-            text=t("詳しい説明をGitHubで開く", "Open the full guide on GitHub"),
+            text=t("詳しい説明をGitHubで開く", "Open the full guide on GitHub", 'Tam rehberi GitHub’da aç'),
             command=self._open_online_guide).pack(side="left")
-        ttk.Button(buttons, text=t("閉じる", "Close"),
+        ttk.Button(buttons, text=t("閉じる", "Close", 'Kapat'),
                    command=win.destroy).pack(side="right")
 
         try:
@@ -2719,33 +2722,32 @@ class App(tk.Tk):
         lbl2.pack(side="left")
         sub = ttk.Label(header,
                         text=t("顔画像＋IDスクショ → 透過PNG ＋ config.xml",
-                               "Face + ID screenshot -> transparent PNG + config.xml"),
+                               "Face + ID screenshot -> transparent PNG + config.xml", 'Yüz + ID ekran görüntüsü -> şeffaf PNG + config.xml'),
                         style="Sub.TLabel")
         sub.grid(row=1, column=0, columnspan=2, sticky="w", pady=(3, 0))
 
         btns = ttk.Frame(header); btns.grid(row=0, column=1, sticky="e")
-        self.lang_btn = ttk.Button(btns,
-                                   text="EN" if self.lang == "ja" else "日本語",
-                                   command=self._toggle_lang,
-                                   # Tk の文字幅は英数字基準。日本語3文字は width=4 だと
-                                   # 高DPI環境で右端が欠けるため、十分な余白を確保する。
-                                   width=7)
-        self.lang_btn.pack(side="right", padx=(4, 0))
+        self.language_var = tk.StringVar(value=LANGUAGES[self.lang])
+        self.lang_combo = ttk.Combobox(
+            btns, textvariable=self.language_var,
+            values=tuple(LANGUAGES.values()), state="readonly", width=9)
+        self.lang_combo.bind("<<ComboboxSelected>>", self._select_lang)
+        self.lang_combo.pack(side="right", padx=(4, 0))
         self.theme_btn = ttk.Button(btns, text="", command=self._toggle_theme, width=3)
         self.theme_btn.pack(side="right")
-        self.help_btn = ttk.Button(btns, text=t("使い方", "Guide"),
+        self.help_btn = ttk.Button(btns, text=t("使い方", "Guide", 'Rehber'),
                                    command=self._show_id_help)
         self.help_btn.pack(side="right", padx=(0, 4))
 
         # ── フォルダ選択 ────────────────────────────────────────
-        fld = ttk.LabelFrame(outer, text=t("フォルダ", "Folders"), padding=8)
+        fld = ttk.LabelFrame(outer, text=t("フォルダ", "Folders", 'Klasörler'), padding=8)
         fld.pack(fill="x", pady=(0, 6))
         fld.columnconfigure(1, weight=1)
-        ttk.Label(fld, text=t("入力", "Input")).grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Label(fld, text=t("入力", "Input", 'Girdi')).grid(row=0, column=0, sticky="w", pady=2)
         in_ent = ttk.Entry(fld, textvariable=self.in_var)
         in_ent.grid(row=0, column=1, sticky="ew", padx=6)
         ttk.Button(fld, text="…", command=self._pick_in, width=3).grid(row=0, column=2)
-        ttk.Label(fld, text=t("出力", "Output")).grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Label(fld, text=t("出力", "Output", 'Çıktı')).grid(row=1, column=0, sticky="w", pady=2)
         out_ent = ttk.Entry(fld, textvariable=self.out_var)
         out_ent.grid(row=1, column=1, sticky="ew", padx=6)
         ttk.Button(fld, text="…", command=self._pick_out, width=3).grid(row=1, column=2)
@@ -2757,43 +2759,43 @@ class App(tk.Tk):
         if self.dnd_ok:
             ttk.Label(fld, style="Sub.TLabel",
                       text=t("フォルダや画像をこの枠にドロップしても設定できます",
-                             "You can also drop a folder or images onto this box")
+                             "You can also drop a folder or images onto this box", 'Bu alana klasör veya görüntü de sürükleyebilirsiniz')
                       ).grid(row=3, column=1, sticky="w", padx=6, pady=(4, 0))
 
         prow = ttk.Frame(fld); prow.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
         # 実行中に押されると処理中のファイルを壊すので、まとめて無効化できるようにする
         self._busy_btns = []
-        b = ttk.Button(prow, text=t("ペアフォルダを作る", "Make pair folders"),
+        b = ttk.Button(prow, text=t("ペアフォルダを作る", "Make pair folders", 'Eşleştirme klasörleri oluştur'),
                        command=self._make_pair_folders)
         b.pack(side="left"); self._busy_btns.append(b)
-        b = ttk.Button(prow, text=t("入力元画像をゴミ箱へ", "Trash source images"),
+        b = ttk.Button(prow, text=t("入力元画像をゴミ箱へ", "Trash source images", 'Kaynak görüntüleri çöpe taşı'),
                        command=self._delete_source_images)
         b.pack(side="left", padx=(8, 0)); self._busy_btns.append(b)
-        b = ttk.Button(prow, text=t("config.xml の重複を除去", "Clean duplicate IDs in config.xml"),
+        b = ttk.Button(prow, text=t("config.xml の重複を除去", "Clean duplicate IDs in config.xml", 'config.xml’deki yinelenen ID’leri temizle'),
                        command=self._dedupe_config_dialog)
         b.pack(side="left", padx=(8, 0)); self._busy_btns.append(b)
 
         # ── オプション ──────────────────────────────────────────
-        opt = ttk.LabelFrame(outer, text=t("オプション", "Options"), padding=8)
+        opt = ttk.LabelFrame(outer, text=t("オプション", "Options", 'Seçenekler'), padding=8)
         opt.pack(fill="x", pady=(0, 6))
 
         basic = ttk.Frame(opt)
         basic.pack(fill="x")
         basic.columnconfigure(0, weight=1)
         basic.columnconfigure(1, weight=1)
-        ttk.Checkbutton(basic, text=t("IDを自動で読み取る", "Auto-read ID"),
+        ttk.Checkbutton(basic, text=t("IDを自動で読み取る", "Auto-read ID", 'ID’yi otomatik oku'),
                         variable=self.ocr_var).grid(row=0, column=0, sticky="w", pady=2)
-        ttk.Checkbutton(basic, text=t("顔を中心に切り抜く", "Crop around face"),
+        ttk.Checkbutton(basic, text=t("顔を中心に切り抜く", "Crop around face", 'Yüzün etrafını kırp'),
                         variable=self.facecrop_var).grid(row=0, column=1, sticky="w", pady=2)
-        ttk.Checkbutton(basic, text=t("画像を拡大する", "Upscale"),
+        ttk.Checkbutton(basic, text=t("画像を拡大する", "Upscale", 'Görüntüyü büyüt'),
                         variable=self.upscale_var).grid(row=1, column=0, sticky="w", pady=2)
-        ttk.Checkbutton(basic, text=t("両目を水平に自動補正", "Auto-level eyes"),
+        ttk.Checkbutton(basic, text=t("両目を水平に自動補正", "Auto-level eyes", 'Gözleri otomatik hizala'),
                         variable=self.auto_level_var).grid(row=1, column=1, sticky="w", pady=2)
-        ttk.Checkbutton(basic, text=t("背景を消して透過にする", "Remove background (transparent)"),
+        ttk.Checkbutton(basic, text=t("背景を消して透過にする", "Remove background (transparent)", 'Arka planı kaldır (şeffaf)'),
                         variable=self.bg_var).grid(row=2, column=0, sticky="w", pady=2)
-        ttk.Checkbutton(basic, text=t("保存前にプレビュー", "Preview before saving"),
+        ttk.Checkbutton(basic, text=t("保存前にプレビュー", "Preview before saving", 'Kaydetmeden önce önizle'),
                         variable=self.preview_var).grid(row=2, column=1, sticky="w", pady=2)
-        ttk.Checkbutton(basic, text=t("config.xml を作る", "Generate config.xml"),
+        ttk.Checkbutton(basic, text=t("config.xml を作る", "Generate config.xml", 'config.xml oluştur'),
                         variable=self.cfg_var).grid(row=3, column=0, sticky="w", pady=2)
 
         self.advanced_btn = ttk.Button(opt, command=self._toggle_advanced)
@@ -2801,69 +2803,69 @@ class App(tk.Tk):
         self.advanced_frame = advanced = ttk.Frame(opt)
 
         row = ttk.Frame(advanced); row.pack(fill="x", pady=(0, 4))
-        ttk.Label(row, text=t("出力サイズ", "Output size")).pack(side="left")
+        ttk.Label(row, text=t("出力サイズ", "Output size", 'Çıktı boyutu')).pack(side="left")
         ttk.Entry(row, textvariable=self.size_var, width=6).pack(side="left", padx=(6, 0))
         ttk.Label(row, text="px", style="Sub.TLabel").pack(side="left", padx=(2, 10))
-        ttk.Label(row, text=t("拡大倍率", "Upscale factor")).pack(side="left")
+        ttk.Label(row, text=t("拡大倍率", "Upscale factor", 'Büyütme katsayısı')).pack(side="left")
         ttk.Entry(row, textvariable=self.scale_var, width=5).pack(side="left", padx=(6, 0))
         ttk.Label(row, text="x", style="Sub.TLabel").pack(side="left", padx=(2, 10))
-        ttk.Label(row, text=t("フィット", "Fit")).pack(side="left")
+        ttk.Label(row, text=t("フィット", "Fit", 'Sığdırma')).pack(side="left")
         ttk.Combobox(row, textvariable=self.fit_var, width=8, state="readonly",
                      values=["contain", "cover", "stretch"]).pack(side="left", padx=(6, 10))
-        ttk.Label(row, text=t("顔サイズ", "Face size")).pack(side="left")
+        ttk.Label(row, text=t("顔サイズ", "Face size", 'Yüz boyutu')).pack(side="left")
         ttk.Entry(row, textvariable=self.face_size_var, width=5).pack(side="left", padx=(6, 0))
 
         row2 = ttk.Frame(advanced); row2.pack(fill="x", pady=(0, 4))
-        ttk.Label(row2, text=t("背景モデル", "BG model")).pack(side="left")
+        ttk.Label(row2, text=t("背景モデル", "BG model", 'Arka plan modeli')).pack(side="left")
         ttk.Combobox(row2, textvariable=self.model_var, width=18, state="readonly",
                      values=["isnet-general-use", "birefnet-general", "birefnet-general-lite",
                              "birefnet-portrait", "u2net_human_seg", "u2net"]).pack(side="left", padx=(6, 16))
-        ttk.Checkbutton(row2, text=t("髪のフチをなめらかにする", "Smooth hair edges (alpha matting)"),
+        ttk.Checkbutton(row2, text=t("髪のフチをなめらかにする", "Smooth hair edges (alpha matting)", 'Saç kenarlarını yumuşat (alpha matting)'),
                         variable=self.matting_var).pack(side="left")
         row2b = ttk.Frame(advanced); row2b.pack(fill="x", pady=(0, 4))
         ttk.Checkbutton(row2b, text=t("remove.bg API を使う（画像を外部送信）",
-                                      "Use remove.bg API (uploads the image)"),
+                                      "Use remove.bg API (uploads the image)", 'remove.bg API kullan (görüntüyü dışarı yükler)'),
                         variable=self.use_removebg_var,
                         command=self._on_removebg_toggle).pack(side="left")
 
         self._apikey_frame = rowk = ttk.Frame(advanced)
         ttk.Label(rowk, text=t("remove.bg APIキー（このPC内だけに保存）",
-                               "remove.bg API key (saved only on this PC)")).pack(side="left")
+                               "remove.bg API key (saved only on this PC)", 'remove.bg API anahtarı (yalnızca bu bilgisayarda saklanır)')).pack(side="left")
         self._apikey_entry = ttk.Entry(rowk, textvariable=self.removebg_var, width=24, show="●")
         self._apikey_entry.pack(side="left", padx=(6, 0))
         self._apikey_show = tk.BooleanVar(value=False)
         def _toggle_key():
             self._apikey_entry.config(show="" if self._apikey_show.get() else "●")
-        ttk.Checkbutton(rowk, text=t("表示", "Show"), variable=self._apikey_show,
+        ttk.Checkbutton(rowk, text=t("表示", "Show", 'Göster'), variable=self._apikey_show,
                         command=_toggle_key).pack(side="left", padx=(6, 0))
 
         chk = self._advanced_checks_frame = ttk.Frame(advanced)
         chk.pack(fill="both", expand=True)
         chk.columnconfigure(0, weight=1)
         chk.columnconfigure(1, weight=1)
-        ttk.Checkbutton(chk, text=t("AI高画質化 (Real-ESRGAN)", "AI upscale (Real-ESRGAN)"),
+        ttk.Checkbutton(chk, text=t("AI高画質化 (Real-ESRGAN)", "AI upscale (Real-ESRGAN)", 'Yapay zekâ ile büyüt (Real-ESRGAN)'),
                         variable=self.ai_var).grid(row=0, column=0, sticky="w", pady=2)
-        ttk.Checkbutton(chk, text=t("config.xml に書き足す（重複無視）", "Append to config.xml (skip dups)"),
+        ttk.Checkbutton(chk, text=t("config.xml に書き足す（重複無視）", "Append to config.xml (skip dups)", 'config.xml’ye ekle (yinelenenleri atla)'),
                         variable=self.append_var).grid(row=0, column=1, sticky="w", pady=2)
-        ttk.Checkbutton(chk, text=t("作成済みでも作り直す", "Overwrite existing"),
+        ttk.Checkbutton(chk, text=t("作成済みでも作り直す", "Overwrite existing", 'Mevcut dosyaların üzerine yaz'),
                         variable=self.ow_var).grid(row=1, column=0, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("生成選手 (newgen) に対応する — ID に r- を付ける",
-                                    "Add r- prefix for newgen players"),
+                                    "Add r- prefix for newgen players", 'Yeni üretilen oyuncular (newgen) için r- öneki ekle'),
                         variable=self.newgen_var).grid(row=1, column=1, sticky="w", pady=2)
         ttk.Checkbutton(chk, text=t("低負荷モード（他のアプリにCPUを譲る・処理は遅くなる）",
-                                    "Low-load mode (yields CPU to other apps; slower)"),
+                                    "Low-load mode (yields CPU to other apps; slower)", 'Düşük yük modu (CPU’yu diğer uygulamalara bırakır; daha yavaş)'),
                         variable=self.lowpower_var).grid(row=2, column=0, columnspan=2, sticky="w", pady=2)
         wrow = ttk.Frame(chk); wrow.grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Label(wrow, text=t("並列処理数", "Parallel workers")).pack(side="left")
+        ttk.Label(wrow, text=t("並列処理数", "Parallel workers", 'Paralel işlem sayısı')).pack(side="left")
         ttk.Spinbox(wrow, textvariable=self.workers_var, from_=1, to=8, width=4,
                     state="readonly").pack(side="left", padx=(6, 0))
         ttk.Label(wrow, text=t("  （1=順番、2以上=同時処理で高速）",
-                               "  (1=sequential, 2+=parallel/faster)"),
+                               "  (1=sequential, 2+=parallel/faster)", '  (1=sırayla, 2 ve üzeri=paralel/daha hızlı)'),
                   style="Sub.TLabel").pack(side="left")
         ttk.Checkbutton(chk, text=t("ログをファイルに保存する（出力フォルダに processing_log_*.txt）",
-                                    "Save log to file (processing_log_*.txt in output folder)"),
+                                    "Save log to file (processing_log_*.txt in output folder)", 'Günlüğü dosyaya kaydet (çıktı klasörüne processing_log_*.txt)'),
                         variable=self.save_log_var).grid(row=4, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Checkbutton(chk, text=t("デバッグモード（診断ログを表示）", "Debug mode (show diagnostic logs)"),
+        ttk.Checkbutton(chk, text=t("デバッグモード（診断ログを表示）", "Debug mode (show diagnostic logs)", 'Hata ayıklama modu (tanılama günlüklerini göster)'),
                         variable=self.debug_var).grid(row=5, column=0, columnspan=2, sticky="w", pady=2)
 
         if self.use_removebg_var.get():
@@ -2873,15 +2875,15 @@ class App(tk.Tk):
         act = ttk.Frame(outer); act.pack(fill="x", pady=(0, 8))
         for column in range(4):
             act.columnconfigure(column, weight=1)
-        self.run_btn = ttk.Button(act, text=t("実行", "Run"), style="Accent.TButton", command=self._run)
+        self.run_btn = ttk.Button(act, text=t("実行", "Run", 'Başlat'), style="Accent.TButton", command=self._run)
         self.run_btn.grid(row=0, column=0, sticky="ew")
-        self.cancel_btn = ttk.Button(act, text=t("キャンセル", "Cancel"),
+        self.cancel_btn = ttk.Button(act, text=t("キャンセル", "Cancel", 'İptal'),
                                      style="Danger.TButton", command=self._cancel, state="disabled")
         self.cancel_btn.grid(row=0, column=1, sticky="ew", padx=(8, 0))
-        self.open_btn = ttk.Button(act, text=t("出力フォルダを開く", "Open output folder"),
+        self.open_btn = ttk.Button(act, text=t("出力フォルダを開く", "Open output folder", 'Çıktı klasörünü aç'),
                                    command=self._open_out, state="disabled")
         self.open_btn.grid(row=0, column=2, sticky="ew", padx=(8, 0))
-        _dl = ttk.Button(act, text=t("ログをすべて削除", "Delete all logs"),
+        _dl = ttk.Button(act, text=t("ログをすべて削除", "Delete all logs", 'Tüm günlükleri sil'),
                          command=self._delete_logs)
         _dl.grid(row=0, column=3, sticky="ew", padx=(8, 0))
         self._busy_btns.append(_dl)
@@ -2912,7 +2914,7 @@ class App(tk.Tk):
                 "Two ways to provide an ID:\n"
                 "1) Put the face photo and an FM screenshot showing an ID such as 'ID: 2000468148' in one folder\n"
                 "2) Or turn off 'Auto-read ID' and rename the face photo to 2000468148.jpg\n"
-                "Choose separate input and output folders, then press Run.")
+                "Choose separate input and output folders, then press Run.", 'ID belirtmenin iki yolu vardır:\n1) Yüz fotoğrafını ve “ID: 2000468148” gibi bir ID’nin göründüğü FM ekran görüntüsünü aynı klasöre koyun\n2) Veya “ID’yi otomatik oku” seçeneğini kapatıp yüz fotoğrafının adını 2000468148.jpg olarak değiştirin\nGirdi ve çıktı için ayrı klasörler seçin, ardından Başlat’a tıklayın.')
             self.log.insert("end", hint + "\n")
             self.log_has_content = False
 
@@ -2928,11 +2930,11 @@ class App(tk.Tk):
         running = bool(getattr(self, "_running", False))
         try:
             if running:
-                self.run_btn.config(state="disabled", text=t("処理中…", "Working…"))
+                self.run_btn.config(state="disabled", text=t("処理中…", "Working…", 'Çalışıyor…'))
                 self.cancel_btn.config(state="normal")
                 self.open_btn.config(state="disabled")
             else:
-                self.run_btn.config(state="normal", text=t("実行", "Run"))
+                self.run_btn.config(state="normal", text=t("実行", "Run", 'Başlat'))
                 self.cancel_btn.config(state="disabled")
                 if getattr(self, "last_out", None):
                     self.open_btn.config(state="normal")
@@ -2964,10 +2966,11 @@ class App(tk.Tk):
         s = ttk.Style(self)
         s.theme_use("clam")
         if mode == "dark":
-            pal = {"bg": "#1e1e2e", "fg": "#cdd6f4", "sel": "#45475a",
-                   "acc": "#89b4fa", "sub": "#6c7086", "entry": "#313244",
-                   "btn": "#313244", "btnfg": "#cdd6f4", "danger": "#f38ba8",
-                   "hover": "#585b70"}
+            # Match the Sun Valley dark theme used by the v2.2.0 Windows build.
+            pal = {"bg": "#1c1c1c", "fg": "#fafafa", "sel": "#3d3d3d",
+                   "acc": "#57c8ff", "sub": "#fafafa", "entry": "#292929",
+                   "btn": "#2b2b2b", "btnfg": "#fafafa", "danger": "#c42b1c",
+                   "hover": "#323232"}
         else:
             pal = {"bg": "#ffffff", "fg": "#1e1e2e", "sel": "#cdd6f4",
                    "acc": "#1e66f5", "sub": "#9ca0b0", "entry": "#eff1f5",
@@ -2985,7 +2988,8 @@ class App(tk.Tk):
         s.configure("TEntry", fieldbackground=pal["entry"])
         s.configure("TButton", background=pal["btn"], foreground=pal["btnfg"],
                     bordercolor=pal["sel"], lightcolor=pal["btn"], darkcolor=pal["btn"])
-        s.configure("Accent.TButton", background=pal["acc"], foreground="#ffffff",
+        accent_fg = "#000000" if mode == "dark" else "#ffffff"
+        s.configure("Accent.TButton", background=pal["acc"], foreground=accent_fg,
                     bordercolor=pal["acc"], lightcolor=pal["acc"], darkcolor=pal["acc"])
         s.configure("Danger.TButton", background=pal["danger"], foreground="#ffffff",
                     bordercolor=pal["danger"], lightcolor=pal["danger"], darkcolor=pal["danger"])
@@ -3007,7 +3011,7 @@ class App(tk.Tk):
               bordercolor=[("active", pal["hover"])])
         s.map("Accent.TButton",
               background=[("pressed", pal["acc"]), ("active", pal["acc"])],
-              foreground=[("active", "#ffffff")])
+              foreground=[("active", accent_fg)])
         s.map("Danger.TButton",
               background=[("pressed", pal["danger"]), ("active", pal["danger"])],
               foreground=[("active", "#ffffff")])
@@ -3034,7 +3038,7 @@ class App(tk.Tk):
         self._cb_dropdown_pal = pal
         self._patch_combobox_popups(self)
         if hasattr(self, "log"):
-            self.log.configure(background=pal["entry"], foreground=pal["fg"],
+            self.log.configure(background=pal["bg"] if mode == "dark" else pal["entry"], foreground=pal["fg"],
                                insertbackground=pal["fg"])
 
     def _patch_combobox_popups(self, parent):
@@ -3068,12 +3072,23 @@ class App(tk.Tk):
     def _toggle_theme(self):
         self.apply_theme("light" if self.mode == "dark" else "dark")
 
-    def _toggle_lang(self):
-        self.lang = "en" if self.lang == "ja" else "ja"
-        set_lang(self.lang)
+    def _select_lang(self, _event=None):
+        selected = self.language_var.get()
+        lang = next((code for code, name in LANGUAGES.items() if name == selected), self.lang)
+        if lang == self.lang:
+            return
+        # Reopen an existing guide in the newly selected language.
+        guide = getattr(self, "_help_window", None)
+        guide_open = guide is not None and guide.winfo_exists()
+        if guide_open:
+            guide.destroy()
+        self.lang = lang
+        set_lang(lang)
         self._build()
-        # _poll は自分で再スケジュールし続けるので、ここで呼ぶとチェーンが二重になる
-        # （切り替えるたびにポーリングループが1本ずつ増え続けていた）
+        self._save_settings()
+        if guide_open:
+            self._show_id_help()
+        # _poll schedules itself; rebuilding must not start a second chain.
 
 
     def _pick_in(self):
@@ -3089,20 +3104,20 @@ class App(tk.Tk):
     def _make_pair_folders(self):
         base = self.in_var.get()
         if not base:
-            messagebox.showwarning(t("確認", "Notice"),
+            messagebox.showwarning(t("確認", "Notice", 'Uyarı'),
                                    t("入力フォルダを先に選んでください。",
-                                     "Please select the input folder first."))
+                                     "Please select the input folder first.", 'Lütfen önce girdi klasörünü seçin.'))
             return
         if not Path(base).is_dir():
             # 入力欄は自由入力で、設定ファイルから復元した古いパスのこともある。
             # 存在確認をしないと FileNotFoundError がコールバックから素通りして
             # 「押しても何も起きない」状態になる。
-            messagebox.showwarning(t("確認", "Notice"),
+            messagebox.showwarning(t("確認", "Notice", 'Uyarı'),
                                    t(f"入力フォルダが見つかりません:\n{base}",
-                                     f"Input folder not found:\n{base}"))
+                                     f"Input folder not found:\n{base}", f'Girdi klasörü bulunamadı:\n{base}'))
             return
-        n = simpledialog.askinteger(t("ペアフォルダを作る", "Make pair folders"),
-                                    t("作るフォルダの数:", "Number of folders to create:"),
+        n = simpledialog.askinteger(t("ペアフォルダを作る", "Make pair folders", 'Eşleştirme klasörleri oluştur'),
+                                    t("作るフォルダの数:", "Number of folders to create:", 'Oluşturulacak klasör sayısı:'),
                                     minvalue=1, maxvalue=200)
         if not n:
             return
@@ -3113,13 +3128,13 @@ class App(tk.Tk):
                 p.mkdir(exist_ok=True)
                 made += 1
         except OSError as e:
-            messagebox.showerror(t("エラー", "Error"),
+            messagebox.showerror(t("エラー", "Error", 'Hata'),
                                  t(f"フォルダを作成できませんでした（{made} 個目まで作成済み）:\n{e}",
-                                   f"Could not create folders (created {made} so far):\n{e}"))
+                                   f"Could not create folders (created {made} so far):\n{e}", f'Klasörler oluşturulamadı (şu ana kadar {made} klasör oluşturuldu):\n{e}'))
             return
-        messagebox.showinfo(t("完了", "Done"),
+        messagebox.showinfo(t("完了", "Done", 'Tamamlandı'),
                             t(f"{made} 個のフォルダを作成しました。\n各フォルダに「顔写真」と「IDスクショ」を1枚ずつ入れてから実行してください。",
-                              f"Created {made} folders.\nPut one face photo and one ID screenshot in each, then run."))
+                              f"Created {made} folders.\nPut one face photo and one ID screenshot in each, then run.", f'{made} klasör oluşturuldu.\nHer klasöre bir yüz fotoğrafı ve ID içeren bir ekran görüntüsü koyun, ardından işlemi başlatın.'))
 
     # ---------- ドラッグ＆ドロップ ----------
     def _dnd_paths(self, data):
@@ -3169,23 +3184,23 @@ class App(tk.Tk):
             self.in_var.set(str(dirs[0]))
             if len(dirs) > 1:
                 self._log(t(f"[i] フォルダが複数ドロップされたので最初の1つを使います: {dirs[0].name}",
-                            f"[i] Multiple folders dropped; using the first: {dirs[0].name}"))
+                            f"[i] Multiple folders dropped; using the first: {dirs[0].name}", f'[i] Birden fazla klasör bırakıldı; ilki kullanılıyor: {dirs[0].name}'))
             return
         if imgs:
             parents = {p.parent for p in imgs}
             if len(parents) > 1:
                 messagebox.showwarning(
-                    t("確認", "Notice"),
+                    t("確認", "Notice", 'Uyarı'),
                     t("複数のフォルダにまたがる画像がドロップされました。\n"
                       "1つのフォルダにまとめてからドロップしてください。",
                       "The dropped images live in different folders.\n"
-                      "Please put them in one folder first."))
+                      "Please put them in one folder first.", 'Bırakılan görüntüler farklı klasörlerde bulunuyor.\nLütfen önce hepsini aynı klasöre koyun.'))
                 return
             self.in_var.set(str(next(iter(parents))))
             return
         if other:
-            messagebox.showwarning(t("確認", "Notice"),
-                                   t("対応していないファイルです。", "Unsupported file."))
+            messagebox.showwarning(t("確認", "Notice", 'Uyarı'),
+                                   t("対応していないファイルです。", "Unsupported file.", 'Desteklenmeyen dosya.'))
 
     def _on_drop_output(self, event):
         dirs, imgs, _o = self._split_dropped(event)
@@ -3232,47 +3247,47 @@ class App(tk.Tk):
                 shutil.copy2(q, dest); added += 1
             except Exception as e:  # noqa: BLE001
                 self._log(t(f"  [!] コピー失敗: {q.name}: {e}",
-                            f"  [!] Copy failed: {q.name}: {e}"))
+                            f"  [!] Copy failed: {q.name}: {e}", f'  [!] Kopyalanamadı: {q.name}: {e}'))
         self._log(t(f"[i] {added} 枚を入力フォルダにコピーしました",
-                    f"[i] Copied {added} image(s) into the input folder"))
+                    f"[i] Copied {added} image(s) into the input folder", f'[i] Girdi klasörüne {added} görüntü kopyalandı'))
         return added
 
     def _delete_source_images(self):
         base = self.in_var.get()
         if not base:
-            messagebox.showwarning(t("確認", "Notice"),
+            messagebox.showwarning(t("確認", "Notice", 'Uyarı'),
                                    t("入力フォルダを先に選んでください。",
-                                     "Please select the input folder first."))
+                                     "Please select the input folder first.", 'Lütfen önce girdi klasörünü seçin.'))
             return
         p = Path(base)
         if not p.exists():
-            messagebox.showwarning(t("確認", "Notice"),
-                                   t("入力フォルダが見つかりません。", "Input folder not found."))
+            messagebox.showwarning(t("確認", "Notice", 'Uyarı'),
+                                   t("入力フォルダが見つかりません。", "Input folder not found.", 'Girdi klasörü bulunamadı.'))
             return
         output = self.out_var.get().strip()
         if output:
             try:
                 if p.resolve() == Path(output).resolve():
                     messagebox.showwarning(
-                        t("確認", "Notice"),
+                        t("確認", "Notice", 'Uyarı'),
                         t("入力と出力が同じフォルダのため、元画像を安全に判別できません。\n"
                           "出力フォルダを分けてから実行してください。",
                           "Input and output are the same folder, so source images cannot be identified safely.\n"
-                          "Choose a separate output folder first."))
+                          "Choose a separate output folder first.", 'Girdi ve çıktı aynı klasör olduğundan kaynak görüntüler güvenli biçimde ayırt edilemiyor.\nLütfen önce ayrı bir çıktı klasörü seçin.'))
                     return
             except OSError:
                 pass
         targets = _source_image_delete_targets(p, output or None)
         if not targets:
-            messagebox.showinfo(t("情報", "Info"),
-                                t("削除する画像がありません。", "No images found to delete."))
+            messagebox.showinfo(t("情報", "Info", 'Bilgi'),
+                                t("削除する画像がありません。", "No images found to delete.", 'Silinecek görüntü bulunamadı.'))
             return
         if not messagebox.askyesno(
-                t("元画像をゴミ箱へ", "Trash source images"),
+                t("元画像をゴミ箱へ", "Trash source images", 'Kaynak görüntüleri çöpe taşı'),
                 t(f"{len(targets)} 枚の元画像を入力フォルダ内の各サブフォルダから"
                   " をごみ箱に送ります。\nフォルダ自体は残します。出力フォルダの完成画像は消えません。\n（ごみ箱から元に戻せます）\n\nよろしいですか？",
                   f"Send {len(targets)} image(s)"
-                  " inside the input folder to the Recycle Bin.\nFolders are kept. Finished images in the output folder are safe.\n(Can be restored from Recycle Bin)\n\nProceed?")):
+                  " inside the input folder to the Recycle Bin.\nFolders are kept. Finished images in the output folder are safe.\n(Can be restored from Recycle Bin)\n\nProceed?", f'Girdi klasöründeki {len(targets)} görüntü Geri Dönüşüm Kutusu’na taşınacak.\nKlasörler korunur. Çıktı klasöründeki tamamlanmış görüntüler etkilenmez.\n(Geri Dönüşüm Kutusu’ndan geri yüklenebilir)\n\nDevam edilsin mi?')):
             return
         failed = 0
         for f in targets:
@@ -3280,43 +3295,43 @@ class App(tk.Tk):
                 # 戻り値 False も失敗（Windows APIのフォールバックが失敗した場合）。
                 # 以前は例外だけ数えていたので「N枚送りました」と嘘の報告をしていた。
                 if not send_to_trash(f):
-                    self._log(t(f"  [!] 削除失敗: {f.name}", f"  [!] Could not delete: {f.name}"))
+                    self._log(t(f"  [!] 削除失敗: {f.name}", f"  [!] Could not delete: {f.name}", f'  [!] Silinemedi: {f.name}'))
                     failed += 1
             except Exception as e:  # noqa: BLE001
-                self._log(t(f"  [!] 削除失敗: {f.name}: {e}", f"  [!] Could not delete: {f.name}: {e}"))
+                self._log(t(f"  [!] 削除失敗: {f.name}: {e}", f"  [!] Could not delete: {f.name}: {e}", f'  [!] Silinemedi: {f.name}: {e}'))
                 failed += 1
         done_n = len(targets) - failed
-        msg = t(f"{done_n} 枚をごみ箱に送りました。", f"Moved {done_n} image(s) to the Recycle Bin.")
+        msg = t(f"{done_n} 枚をごみ箱に送りました。", f"Moved {done_n} image(s) to the Recycle Bin.", f'{done_n} görüntü Geri Dönüşüm Kutusu’na taşındı.')
         if failed:
-            msg += t(f"\n{failed} 枚は削除できませんでした。", f"\n{failed} image(s) could not be deleted.")
-        messagebox.showinfo(t("完了", "Done"), msg)
+            msg += t(f"\n{failed} 枚は削除できませんでした。", f"\n{failed} image(s) could not be deleted.", f'\n{failed} görüntü silinemedi.')
+        messagebox.showinfo(t("完了", "Done", 'Tamamlandı'), msg)
 
     def _dedupe_config_dialog(self):
         start = filedialog.askopenfilename(
-            title=t("掃除する config.xml を選んでください", "Choose a config.xml to clean"),
+            title=t("掃除する config.xml を選んでください", "Choose a config.xml to clean", 'Temizlenecek config.xml dosyasını seçin'),
             filetypes=[("XML", "*.xml"), ("All", "*.*")])
         if not start:
             return
         try:
             out, backup, removed, kept = dedupe_config(Path(start))
         except Exception as e:  # noqa: BLE001
-            messagebox.showerror(t("エラー", "Error"), str(e))
+            messagebox.showerror(t("エラー", "Error", 'Hata'), str(e))
             return
         if removed == 0:
-            messagebox.showinfo(t("重複なし", "No Duplicates"),
+            messagebox.showinfo(t("重複なし", "No Duplicates", 'Yinelenen ID yok'),
                                 t(f"config.xml: 重複なし（{kept} 件）。",
-                                  f"config.xml: no duplicates ({kept} remain)."))
+                                  f"config.xml: no duplicates ({kept} remain).", f'config.xml: yinelenen ID yok ({kept} kayıt).'))
         else:
-            messagebox.showinfo(t("完了", "Done"),
+            messagebox.showinfo(t("完了", "Done", 'Tamamlandı'),
                                 t(f"{removed} 件の重複を削除しました（残り {kept} 件）。\n元のファイル: {backup.name}",
-                                  f"Removed {removed} duplicate(s) ({kept} remain).\nOriginal: {backup.name}"))
+                                  f"Removed {removed} duplicate(s) ({kept} remain).\nOriginal: {backup.name}", f'{removed} yinelenen kayıt silindi ({kept} kayıt kaldı).\nOrijinal dosya: {backup.name}'))
 
     def _cancel(self):
         if hasattr(self, "_cancel_event"):
             self._cancel_event.set()
         self.cancel_btn.config(state="disabled")
         self._log(t("[i] キャンセルを要求しました…現在の画像が終わったら停止します。",
-                    "[i] Cancel requested… will stop after the current image finishes."))
+                    "[i] Cancel requested… will stop after the current image finishes.", '[i] İptal istendi… mevcut görüntü tamamlandıktan sonra durdurulacak.'))
 
     def _open_out(self):
         if not self.last_out:
@@ -3329,33 +3344,33 @@ class App(tk.Tk):
             else:
                 os.system(f'xdg-open "{self.last_out}"')
         except Exception as e:  # noqa: BLE001
-            messagebox.showwarning(t("確認", "Notice"),
-                                   t(f"フォルダを開けませんでした: {e}", f"Could not open folder: {e}"))
+            messagebox.showwarning(t("確認", "Notice", 'Uyarı'),
+                                   t(f"フォルダを開けませんでした: {e}", f"Could not open folder: {e}", f'Klasör açılamadı: {e}'))
 
     def _delete_logs(self):
         out = self.out_var.get().strip()
         if not out:
-            messagebox.showwarning(t("ログ削除", "Delete Logs"),
-                                   t("出力フォルダが設定されていません。", "Output folder is not set."))
+            messagebox.showwarning(t("ログ削除", "Delete Logs", 'Günlükleri sil'),
+                                   t("出力フォルダが設定されていません。", "Output folder is not set.", 'Çıktı klasörü ayarlanmamış.'))
             return
         from pathlib import Path as _Path
         logs = list(_Path(out).glob("processing_log_*.txt"))
         if not logs:
-            messagebox.showinfo(t("ログ削除", "Delete Logs"),
-                                t("削除するログファイルがありません。", "No log files to delete."))
+            messagebox.showinfo(t("ログ削除", "Delete Logs", 'Günlükleri sil'),
+                                t("削除するログファイルがありません。", "No log files to delete.", 'Silinecek günlük dosyası yok.'))
             return
         if messagebox.askyesno(
-                t("ログをすべて削除", "Delete All Logs"),
+                t("ログをすべて削除", "Delete All Logs", 'Tüm günlükleri sil'),
                 t(f"出力フォルダ内のログファイル {len(logs)} 件を削除しますか？\n（この操作は元に戻せません）",
-                  f"Delete {len(logs)} log file(s) from the output folder?\n(This cannot be undone)")):
+                  f"Delete {len(logs)} log file(s) from the output folder?\n(This cannot be undone)", f'Çıktı klasöründeki {len(logs)} günlük dosyası silinsin mi?\n(Bu işlem geri alınamaz)')):
             for lf in logs:
                 try:
                     lf.unlink()
                 except Exception:
                     pass
-            messagebox.showinfo(t("ログ削除", "Delete Logs"),
+            messagebox.showinfo(t("ログ削除", "Delete Logs", 'Günlükleri sil'),
                                 t(f"{len(logs)} 件のログを削除しました。",
-                                  f"Deleted {len(logs)} log file(s)."))
+                                  f"Deleted {len(logs)} log file(s).", f'{len(logs)} günlük dosyası silindi.'))
 
     def _log(self, msg):
         # _build() でウィジェットを作り直すと表示が消えるので、内容を保持しておく
@@ -3376,7 +3391,7 @@ class App(tk.Tk):
         except Exception as e:  # noqa: BLE001
             try:
                 self._log(t(f"[!] プレビューを表示できませんでした（保存して続行します）: {e}",
-                            f"[!] Could not show preview (saving and continuing): {e}"))
+                            f"[!] Could not show preview (saving and continuing): {e}", f'[!] Önizleme gösterilemedi (kaydedilip devam ediliyor): {e}'))
             except Exception:  # noqa: BLE001
                 pass
             holder.setdefault("r", "save")
@@ -3390,7 +3405,7 @@ class App(tk.Tk):
         import io as _io
         img = _I.open(_io.BytesIO(data)).convert("RGBA")
         win = tk.Toplevel(self)
-        win.title(t("プレビュー・微調整", "Preview & adjust"))
+        win.title(t("プレビュー・微調整", "Preview & adjust", 'Önizleme ve ayarlama'))
         win.grab_set()
         win.resizable(False, False)
         set_titlebar_dark(win, self.mode == "dark")
@@ -3399,7 +3414,7 @@ class App(tk.Tk):
         ttk.Label(
             win,
             text=t("枠の内側が保存されます（枠線は画像に入りません）",
-                   "Everything inside the frame is saved (the line is not saved)"),
+                   "Everything inside the frame is saved (the line is not saved)", 'Çerçevenin içi kaydedilir (çerçeve çizgisi kaydedilmez)'),
         ).pack(padx=12, pady=(0, 10))
 
         zoom_var = tk.DoubleVar(value=100.0)
@@ -3435,12 +3450,12 @@ class App(tk.Tk):
             angle_text.set(f"{angle_var.get():+.1f}°")
             neck_text.set(f"{neck_var.get():.0f}px")
 
-        controls = ttk.LabelFrame(win, text=t("位置と角度", "Position and angle"), padding=8)
+        controls = ttk.LabelFrame(win, text=t("位置と角度", "Position and angle", 'Konum ve açı'), padding=8)
         controls.pack(fill="x", padx=12, pady=(0, 10))
         controls.columnconfigure(1, weight=1)
 
         def add_slider(row, label_ja, label_en, variable, start, end, value_text):
-            ttk.Label(controls, text=t(label_ja, label_en), width=9).grid(
+            ttk.Label(controls, text=t(label_ja, label_en, {'Zoom': 'Yakınlaştırma', 'Left/right': 'Sağ/sol', 'Up/down': 'Yukarı/aşağı', 'Rotation': 'Döndürme', 'Shorten neck': 'Boynu kısalt'}[label_en]), width=13 if self.lang == "tr" else 9).grid(
                 row=row, column=0, sticky="w", pady=2)
             scale = ttk.Scale(controls, variable=variable, from_=start, to=end,
                               command=render, length=300)
@@ -3465,7 +3480,7 @@ class App(tk.Tk):
             neck_var.set(0.0)
             render()
 
-        ttk.Button(controls, text=t("調整をリセット", "Reset adjustments"),
+        ttk.Button(controls, text=t("調整をリセット", "Reset adjustments", 'Ayarları sıfırla'),
                    command=reset_adjustment).grid(row=5, column=0, columnspan=3, pady=(6, 0))
         btns = ttk.Frame(win); btns.pack(pady=(0, 12))
 
@@ -3478,13 +3493,13 @@ class App(tk.Tk):
             win.destroy()
             ev.set()
 
-        ttk.Button(btns, text=t("保存", "Save"),
+        ttk.Button(btns, text=t("保存", "Save", 'Kaydet'),
                    command=lambda: answer("save")).pack(side="left", padx=4)
-        ttk.Button(btns, text=t("スキップ", "Skip"),
+        ttk.Button(btns, text=t("スキップ", "Skip", 'Atla'),
                    command=lambda: answer("skip")).pack(side="left", padx=4)
-        ttk.Button(btns, text=t("全部保存", "Save all"),
+        ttk.Button(btns, text=t("全部保存", "Save all", 'Tümünü kaydet'),
                    command=lambda: answer("all")).pack(side="left", padx=4)
-        ttk.Button(btns, text=t("キャンセル", "Cancel"),
+        ttk.Button(btns, text=t("キャンセル", "Cancel", 'İptal'),
                    command=lambda: answer("cancel")).pack(side="left", padx=4)
         win.protocol("WM_DELETE_WINDOW", lambda: answer("cancel"))
         render()
@@ -3520,16 +3535,16 @@ class App(tk.Tk):
                     self._current_file = ""
                     self._save_settings()
                     if payload:
-                        messagebox.showerror(t("エラー", "Error"), str(payload))
+                        messagebox.showerror(t("エラー", "Error", 'Hata'), str(payload))
                     elif cancelled:
                         messagebox.showinfo(
-                            t("キャンセル", "Cancelled"),
+                            t("キャンセル", "Cancelled", 'İptal edildi'),
                             t("処理をキャンセルしました。完了済みの画像は保存されています。",
-                              "Processing was cancelled. Completed images have been saved."))
+                              "Processing was cancelled. Completed images have been saved.", 'İşlem iptal edildi. Tamamlanan görüntüler kaydedildi.'))
                     else:
                         elapsed_msg = t(f"処理が終わりました（{elapsed:.0f}秒）。\nログでペアの対応を確認してください。",
-                                        f"Finished in {elapsed:.0f}s.\nCheck the log for the pairings.")
-                        messagebox.showinfo(t("完了", "Done"), elapsed_msg)
+                                        f"Finished in {elapsed:.0f}s.\nCheck the log for the pairings.", f'{elapsed:.0f} saniyede tamamlandı.\nEşleştirmeleri günlükten kontrol edin.')
+                        messagebox.showinfo(t("完了", "Done", 'Tamamlandı'), elapsed_msg)
         except queue.Empty:
             pass
         except Exception as _poll_err:  # noqa: BLE001
@@ -3542,7 +3557,7 @@ class App(tk.Tk):
             if getattr(self, "_running", False) and hasattr(self, "_run_start"):
                 elapsed = time.monotonic() - self._run_start
                 fname = getattr(self, "_current_file", "")
-                text = t(f"処理中… {elapsed:.0f}秒経過", f"Processing… {elapsed:.0f}s")
+                text = t(f"処理中… {elapsed:.0f}秒経過", f"Processing… {elapsed:.0f}s", f'İşleniyor… {elapsed:.0f} sn')
                 if fname:
                     text += f"  |  {fname}"
                 self.status_lbl.config(text=text)
@@ -3561,12 +3576,12 @@ class App(tk.Tk):
         if th is not None and th.is_alive():
             # ボタンの無効化だけを頼りにすると、言語切替で再構築された直後に
             # 同じ出力フォルダへ2本目のスレッドを起動できてしまう
-            messagebox.showwarning(t("確認", "Notice"),
-                                   t("すでに処理中です。", "A job is already running."))
+            messagebox.showwarning(t("確認", "Notice", 'Uyarı'),
+                                   t("すでに処理中です。", "A job is already running.", 'Bir işlem zaten çalışıyor.'))
             return
         if not self.in_var.get():
-            messagebox.showwarning(t("確認", "Notice"),
-                                   t("入力フォルダを選んでください。", "Please select the input folder."))
+            messagebox.showwarning(t("確認", "Notice", 'Uyarı'),
+                                   t("入力フォルダを選んでください。", "Please select the input folder.", 'Lütfen girdi klasörünü seçin.'))
             return
         try:
             opts = {
@@ -3595,19 +3610,19 @@ class App(tk.Tk):
                 "debug":         self.debug_var.get(),
             }
         except (tk.TclError, ValueError):
-            messagebox.showwarning(t("確認", "Notice"),
+            messagebox.showwarning(t("確認", "Notice", 'Uyarı'),
                                    t("サイズ・倍率は数値で入力してください。",
-                                     "Size and upscale must be numbers."))
+                                     "Size and upscale must be numbers.", 'Boyut ve büyütme katsayısı sayı olmalıdır.'))
             return
         if not 1 <= opts["size"] <= 4096:
-            messagebox.showwarning(t("確認", "Notice"),
+            messagebox.showwarning(t("確認", "Notice", 'Uyarı'),
                                    t("出力サイズは 1〜4096 px で指定してください。",
-                                     "Output size must be between 1 and 4096 px."))
+                                     "Output size must be between 1 and 4096 px.", 'Çıktı boyutu 1 ile 4096 piksel arasında olmalıdır.'))
             return
         if not 0 < opts["scale"] <= 8:
-            messagebox.showwarning(t("確認", "Notice"),
+            messagebox.showwarning(t("確認", "Notice", 'Uyarı'),
                                    t("拡大倍率は 0 より大きく 8 以下で指定してください。",
-                                     "Upscale factor must be greater than 0 and no more than 8."))
+                                     "Upscale factor must be greater than 0 and no more than 8.", 'Büyütme katsayısı 0’dan büyük ve en fazla 8 olmalıdır.'))
             return
 
         if self.preview_var.get():
@@ -3672,7 +3687,7 @@ class App(tk.Tk):
                 set_low_power(True)
                 set_process_priority(True)
                 _log_fn(t("[i] 低負荷モードで実行します（処理は遅めです）",
-                           "[i] Running in low-load mode (slower)"))
+                           "[i] Running in low-load mode (slower)", '[i] Düşük yük modunda çalışıyor (daha yavaş)'))
             try:
                 process_folder(opts, _log_fn,
                                progress=lambda d, tot: self.q.put(("progress", (d, tot))))

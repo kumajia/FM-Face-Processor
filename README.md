@@ -2,7 +2,7 @@
   <img src="assets/fm_face_processor.png" alt="FM Face Processor icon" width="144">
   <h1>FM Face Processor</h1>
   <p><strong>顔写真 + IDスクショ → FMポートレート + config.xml を自動生成<br>Face photo + ID screenshot → FM portrait + config.xml</strong></p>
-  <p><a href="#日本語">日本語</a> · <a href="#english">English</a></p>
+  <p><a href="#日本語">日本語</a> · <a href="#english">English</a> · <a href="#türkçe">Türkçe</a></p>
 </div>
 
 <div align="center">
@@ -63,7 +63,7 @@ flowchart LR
 | 🔢 ID自動読取 | RapidOCRでスクショからIDを認識し、`<ID>.png`で保存 |
 | 📄 config.xml生成 | 実行のたびに追記し、重複IDはスキップ |
 | 👶 newgen対応 | IDに`r-`プレフィックスを付けるオプション |
-| 🌐 UI | 日本語 / 英語、ダーク / ライトテーマ、スクロール対応、設定保存 |
+| 🌐 UI | 日本語 / 英語 / トルコ語、ダーク / ライトテーマ、スクロール対応、設定保存 |
 | 👁️ 保存前プレビュー | 保存枠を見ながら拡大率・位置・角度・首の長さを1枚ずつ調整 |
 | ☁️ remove.bg API | 任意。失敗または不完全な結果ではローカルAIへ自動切替 |
 | 🛡️ データ保護 | 一時ファイル保存、`config.xml`自動バックアップ、ごみ箱への移動 |
@@ -144,6 +144,12 @@ py -3.12 "FM Face Processor.py"
 `FM Face Processor.py`、`requirements.txt`、`assets`フォルダは同じ構成のまま置いてください。初回のライブラリ準備と、ローカル背景除去モデルを初めて使用するときはインターネット接続が必要です。
 
 ### 主な更新内容
+
+#### v2.3.1
+
+- トルコ語に対応し、右上の一覧から日本語・英語・トルコ語を選択可能に変更
+- 選択した言語を保存し、起動時とガイド表示に反映
+- 代替ダークテーマを、通常テーマと同系統の濃いグレーと水色に調整
 
 #### v2.3.0
 
@@ -254,7 +260,7 @@ flowchart LR
 | 🔢 Automatic ID reading | RapidOCR reads the ID screenshot and saves the portrait as `<ID>.png` |
 | 📄 config.xml | Appends entries automatically and skips duplicate IDs |
 | 👶 Newgen support | Optional `r-` prefix for newgen IDs |
-| 🌐 UI | English / Japanese, dark / light themes, scrolling, and persistent settings |
+| 🌐 UI | English / Japanese / Turkish, dark / light themes, scrolling, and persistent settings |
 | 👁️ Preview before saving | Exact saved frame plus per-image zoom, position, rotation, and neck-length adjustment |
 | ☁️ remove.bg API | Optional; falls back to local AI when unavailable or incomplete |
 | 🛡️ Data protection | Temporary-file saving, automatic `config.xml` backups, and Recycle Bin cleanup |
@@ -336,6 +342,12 @@ Keep `FM Face Processor.py`, `requirements.txt`, and the `assets` folder in the 
 
 ### What's new
 
+#### v2.3.1
+
+- Adds Turkish alongside Japanese and English in the language selector
+- Saves the selected language and applies it to startup and the built-in guide
+- Matches the fallback dark palette to the standard charcoal and cyan theme
+
 #### v2.3.0
 
 - Explains both ID-screenshot and filename-based workflows on first launch
@@ -395,3 +407,36 @@ See [BRANDING.md](BRANDING.md) for details.
 ### Changelog
 
 See the [Releases page](https://github.com/kumajia/FM-Face-Processor/releases) for the complete changelog.
+
+
+---
+
+## Türkçe
+
+FM Face Processor, Football Manager için oyuncu ve personel portreleri hazırlayan ücretsiz bir Windows uygulamasıdır. Yüzleri algılar ve kırpar; isteğe bağlı olarak görüntüleri büyütür, arka planı kaldırır, kişi ID’siyle şeffaf PNG dosyaları kaydeder ve `config.xml` oluşturur.
+
+### Dil seçimi
+
+v2.3.1 sürümünde sağ üstteki dil listesinden **Türkçe**’yi seçin. Dil tercihiniz kaydedilir. Japonca ve İngilizce de kullanılabilir.
+
+### Hızlı başlangıç
+
+1. Uygulamada girdi ve çıktı için **ayrı klasörler** seçin.
+2. Kişinin ID’sini şu iki yöntemden biriyle belirtin:
+   - **Dosya adı:** “ID’yi otomatik oku” seçeneğini kapatın ve yüz fotoğrafını `2000468148.jpg` gibi kişinin ID’siyle adlandırın. Ekran görüntüsü gerekmez.
+   - **Ekran görüntüsü:** FM Tercihleri’nde `ID`yi arayın ve arayüz tasarımı için ekran ID’lerini gösteren seçeneği etkinleştirin. Kişinin ID’sinin göründüğü profil ekran görüntüsünü ve yüz fotoğrafını aynı girdi klasörüne koyun. Her kişi için ayrı bir alt klasör kullanmak eşleştirmeyi daha güvenilir kılar.
+3. **Başlat**’a tıklayın. Çıktı klasöründeki PNG dosyalarını, `config.xml` dosyasını ve işlem günlüğünü kontrol edin.
+4. PNG dosyalarını ve `config.xml` dosyasını Football Manager’ın aynı yüz paketi klasörüne koyun, ardından oyunda arayüzü yeniden yükleyin.
+
+### Kaynak koddan çalıştırma
+
+Windows’ta 64 bit Python 3.12 ile, arşivi çıkardığınız klasörde şu komutları çalıştırın:
+
+```powershell
+py -3.12 -m pip install -r requirements.txt
+py -3.12 "FM Face Processor.py"
+```
+
+Yapay zekâ ile büyütme için isteğe bağlı Real-ESRGAN ONNX modeli ayrıca gerekir. İlk yerel arka plan kaldırma işleminde model indirmek için internet bağlantısı gerekir. **remove.bg API** seçeneği etkinleştirilirse işlenen yüz görüntüleri remove.bg hizmetine gönderilir. API anahtarı yalnızca bu bilgisayarda saklanır.
+
+PNG oluşmazsa işlem günlüğünü kontrol edin. Yüz fotoğrafı ile ID ekran görüntüsünün kayıt zamanları birbirinden uzaksa, ikisini kişiye özel aynı alt klasöre koyun veya dosya adı yöntemini kullanın.
