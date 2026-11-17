@@ -145,6 +145,14 @@ py -3.12 "FM Face Processor.py"
 
 ### 主な更新内容
 
+#### v2.4.0
+
+- 顔の切り抜きを調整しやすくしました。自動で出た枠を見ながら、拡大表示、切り抜き範囲、回転、襟の移動を同じ画面で調整できます。
+- 各画像の保存前にプレビューが開き、そこで出力サイズを選んで保存できます。
+- CPUでローカル処理する場合は、確認中に次の画像を準備し、次のプレビューまでの待ち時間を短縮します。
+
+自動一括処理やプレビューのオン・オフを使いたい場合は、[v2.3.1](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.3.1)を利用できます。[v2.4.0のプレビューの使い方](https://github.com/kumajia/FM-Face-Processor/blob/v2.4.0/README.md#保存前プレビュー)
+
 #### v2.3.1
 
 - トルコ語に対応し、右上の一覧から日本語・英語・トルコ語を選択可能に変更
@@ -341,6 +349,14 @@ py -3.12 "FM Face Processor.py"
 Keep `FM Face Processor.py`, `requirements.txt`, and the `assets` folder in the same directory structure. Internet access is required while installing dependencies and the first time the local background-removal model is used.
 
 ### What's new
+
+#### v2.4.0
+
+- Easier face cropping. Start with the automatic crop, then zoom in or adjust the crop frame, rotation, and collar in the same preview.
+- Every image opens a preview before saving. Choose the output size and save each portrait there.
+- With local CPU processing, the next image is prepared while you review the current one, reducing the wait between previews.
+
+[v2.3.1](https://github.com/kumajia/FM-Face-Processor/releases/tag/v2.3.1) is still available for automatic batch processing and optional previews. [v2.4.0 preview guide](https://github.com/kumajia/FM-Face-Processor/blob/v2.4.0/README.md#preview-before-saving)
 
 #### v2.3.1
 
