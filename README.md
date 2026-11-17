@@ -63,8 +63,8 @@ flowchart LR
 | 🔢 ID自動読取 | RapidOCRでスクショからIDを認識し、`<ID>.png`で保存 |
 | 📄 config.xml生成 | 実行のたびに追記し、重複IDはスキップ |
 | 👶 newgen対応 | IDに`r-`プレフィックスを付けるオプション |
-| 🌐 UI | 日本語 / 英語 / トルコ語、ダーク / ライトテーマ、スクロール対応、設定保存 |
-| 👁️ 保存前プレビュー | 保存枠を見ながら拡大率・位置・角度・首の長さを1枚ずつ調整 |
+| 🌐 UI | 日本語 / 英語 / トルコ語（既定はWindowsの表示言語に合わせる）、ダーク / ライトテーマ、スクロール対応、設定保存 |
+| 👁️ 保存前プレビュー | トリミング前の画像を拡大しながら、襟の移動・手動回転・1:1の保存枠を1つの画面で調整 |
 | ☁️ remove.bg API | 任意。失敗または不完全な結果ではローカルAIへ自動切替 |
 | 🛡️ データ保護 | 一時ファイル保存、`config.xml`自動バックアップ、ごみ箱への移動 |
 
@@ -109,11 +109,24 @@ C:\Users\<ユーザー名>\OneDrive\Documents\Sports Interactive\Football Manage
 
 ### 保存前プレビュー
 
-- 枠の内側だけが保存され、枠線はPNGに入りません
-- ダークテーマでは白枠、ライトテーマでは黒枠で表示します
+背景除去後・トリミング前の画像を表示し、自動で求めた切り抜き範囲を初期枠にします。襟の移動・保存枠・回転・出力サイズは、モードを切り替えずに1つの画面で操作します。
+
+- **表示の拡大**: 画像の上でマウスホイールを回すと、カーソルの位置を中心に拡大・縮小します。拡大中は中ボタンのドラッグで表示を移動でき、「全体表示」で初期表示に戻ります。表示の拡大や移動は保存枠の位置・大きさや保存されるPNGに影響しません
+- **保存枠**: 1:1の枠と下の角の●は常に表示されます。枠の内側をドラッグすると枠が動き、下の角の●をドラッグすると上辺の高さを保ったまま大きさが変わります。襟を選んでいないときは矢印キーでも枠が動きます
+- **襟**: 「襟を選択」を押した次のドラッグ、または Shift＋ドラッグで片側の襟を四角く囲みます（枠の外も可）。襟を選んでいる間は画像の外枠と案内文がアクセント色になります。矢印キー（Shift で10倍）か選択の内側のドラッグで動かし、Enterで確定、Escで取り消すと、すぐ枠の操作に戻ります。Ctrl+Zで直前の襟移動を取り消せます。選択範囲は切り取って動かすので移動元に襟が二重に残らず、顔の楕円の内側（顎・口）は形も位置も変わりません
+- **回転（微調整）**: −15°〜＋15°（自動水平補正の結果に対する微調整。スライダーを選んでいる間は矢印キーで0.1°ずつ、「0°に戻す」で解除）。保存画像は「襟の移動 → 回転 → 1:1の枠で切り抜き」の順に作ります。回転や拡大をしていても、画面で囲った範囲がそのまま選ばれ、矢印キーの向きどおりに動きます
+- **出力サイズ**: 実行の最初のプレビューで 180×180 / 250×250 / 任意（1〜4096 px）から選びます。選ぶまで「保存」は押せません。選んだサイズは同じ実行の次のプレビューに引き継がれ、途中で変えてもすでに保存したPNGは変わりません。サイズを変えても構図は同じです。メイン画面に出力サイズの欄はありません
+- **保存・スキップ・キャンセル**: 画像は1枚ずつプレビューを開きます。各画像は、そのプレビューで「保存」を押したときだけ保存されます（「全部保存」はありません）。「スキップ」はその画像を保存せずに次へ、「キャンセル」は保存せずに処理を止めます。操作しないまま10分たつと保存せずに閉じ、処理を止めます
+- **次の画像の先読み**: 背景透過の処理先がCPUで、remove.bg を使わないときは、プレビューを開いている間に次の1枚の準備（読み込み・顔検出・背景除去）を進めます。保存・スキップのあと、次のプレビューが早く開きます。保存されるのは、これまでどおり各プレビューで「保存」を押した画像だけです。準備の途中でキャンセルした場合は、その準備が終わるのを待ってから止まります（準備した画像は保存しません）。GPUを選んだとき・remove.bg を使うときは先読みしません
+- 枠の内側だけが透過PNGで保存されます。枠線・選択線・枠外の暗い表示はプレビュー専用でPNGに入りません
+- 何も編集せずに保存すると、従来の自動出力と同じ画像になります
 - 長い首では襟の開始位置を検出し、顔高さの約18%ぶん襟が見えるまで保存枠を自動拡張します
-- 「首を短く」は顎位置を保護し、顎より下から襟までの首部分だけを滑らかに縦圧縮します
-- 短縮量は検出した首の長さの15%以内に自動制限します
+
+### 表示言語とフォント
+
+- 右上の言語メニューの「Windowsに合わせる」が既定です。Windowsの表示言語が日本語なら日本語、トルコ語ならトルコ語、それ以外（英語・未対応の言語・取得できない場合）は英語で表示し、起動のたびに判定します
+- メニューで日本語・English・Türkçeを選ぶと、その言語が優先されます（以前のバージョンで選んだ言語もそのまま使います）
+- 日本語表示では、設定項目・ボタン・プレビューの案内・ログに Noto Sans JP（Regular）を使います。インストールされていない場合はメイリオ（標準）を使います。英語・トルコ語の表示は従来のフォントのままです
 
 ### remove.bgとプライバシー
 
@@ -179,9 +192,9 @@ py -3.12 "FM Face Processor.py"
 | 顔写真とIDの組み合わせが違う | 撮影時刻を確認するか、1人分ずつサブフォルダに分ける |
 | 背景が抜けない | ローカルAIまたはremove.bgを有効にし、処理ログを確認する |
 | remove.bgが使えない | APIキーと通信環境を確認する。失敗時はローカルAIへ自動で切り替わる |
-| 顔が大きすぎる / 切れる | 「顔の大きさ」の数値を大きくするか、プレビューで位置と倍率を調整する |
-| 首が長すぎる | 「保存前にプレビュー」をONにし、「首を短く」を少しずつ上げる |
-| 顔が傾いている | 「両目を水平に自動補正」をONにし、必要ならプレビューで微調整する |
+| 顔が大きすぎる / 切れる | 「顔の大きさ」の数値を大きくするか、プレビューで枠を動かす・広げる |
+| 首が長すぎる / 襟が枠の外にある | プレビューの「襟を選択」（または Shift＋ドラッグ）で左右の襟を上へ動かす |
+| 顔が傾いている | 「両目を水平に自動補正」をONにし、必要ならプレビューで回転を微調整する |
 | 高画質化できない | 「AI高画質化（Real-ESRGAN）」をOFFにするか、配布ZIPを展開し直す |
 | EXEが起動しない | ZIPを完全に展開し、EXE単体ではなくフォルダ一式で起動する |
 
@@ -260,8 +273,8 @@ flowchart LR
 | 🔢 Automatic ID reading | RapidOCR reads the ID screenshot and saves the portrait as `<ID>.png` |
 | 📄 config.xml | Appends entries automatically and skips duplicate IDs |
 | 👶 Newgen support | Optional `r-` prefix for newgen IDs |
-| 🌐 UI | English / Japanese / Turkish, dark / light themes, scrolling, and persistent settings |
-| 👁️ Preview before saving | Exact saved frame plus per-image zoom, position, rotation, and neck-length adjustment |
+| 🌐 UI | English / Japanese / Turkish (follows the Windows display language by default), dark / light themes, scrolling, and persistent settings |
+| 👁️ Preview before saving | Zoom into the uncropped image and adjust collar moves, rotation, and the 1:1 saved frame on one screen |
 | ☁️ remove.bg API | Optional; falls back to local AI when unavailable or incomplete |
 | 🛡️ Data protection | Temporary-file saving, automatic `config.xml` backups, and Recycle Bin cleanup |
 
@@ -306,11 +319,24 @@ Create the `graphics` folder if it does not exist, then put the generated PNG fi
 
 ### Preview before saving
 
-- Only the inside of the frame is saved; the frame line is never written to the PNG
-- The frame is white in dark mode and black in light mode
+The preview shows the background-removed image before cropping, with the automatically calculated crop as the starting frame. Collar moves, the saved frame, rotation, and output size all work on one screen, with no mode switching.
+
+- **Zoom**: turn the mouse wheel over the image to zoom around the cursor. While zoomed, drag with the middle button to pan; **Fit to view** returns to the initial view. Zooming and panning never change the frame or the saved PNG
+- **Frame**: the 1:1 frame and its bottom corner handles are always shown. Drag inside the frame to move it, or drag a bottom corner to resize it while the top edge stays put. With no collar selected, the arrow keys also move the frame
+- **Collar**: click **Select collar** and drag, or Shift+drag, to draw a rectangle around one side of the collar (outside the frame is fine). While a collar is selected, the image border and the hint turn the accent color. Move it with the arrow keys (Shift = 10x) or by dragging inside the selection; Enter commits and Esc cancels, both returning straight to the frame. Ctrl+Z undoes the last collar move. The selection is cut, not copied, so no second collar is left behind, and the face ellipse (chin and mouth) keeps its shape and position
+- **Rotation (fine-tune)**: -15° to +15° on top of auto-leveling (0.1° per arrow key while the slider has focus; **Reset to 0°** clears it). The saved image is built as collar moves -> rotation -> 1:1 crop. Even when rotated or zoomed, the area you enclose on screen is the one selected, and it moves in the arrow key's direction
+- **Output size**: in the first preview of a run, choose 180×180, 250×250 or Custom (1-4096 px); Save stays disabled until a size is chosen. The size carries over to the next previews of the run, and changing it later never alters PNGs already saved. Switching keeps the same composition. The main window has no output-size field
+- **Save, Skip, Cancel**: every image opens its own preview and is saved only when you press Save in that preview (there is no Save all). Skip moves on without saving the image; Cancel stops without saving. A preview left idle for 10 minutes closes without saving and stops the run
+- **Next image prepared in advance**: when background removal runs on CPU and remove.bg is not used, the next image is prepared (loading, face detection, background removal) while a preview is open, so the next preview opens sooner after Save or Skip. As before, only images you Save in their own preview are written. If you cancel while an image is being prepared, the run stops once that preparation has finished (the prepared image is not saved). Nothing is prepared in advance with GPU selected or with remove.bg
+- Only the inside of the frame is saved as a transparent PNG. The frame line, selection outline, and dimming are preview-only
+- Saving without any edit produces the same image as the automatic output
 - For long-neck sources, the crop expands past the detected collar line to retain roughly 18% of the face height below it
-- **Shorten neck** protects the detected chin and compresses only the neck area below it
-- The adjustment is limited to 15% of the detected neck length
+
+### Display language and fonts
+
+- **Match Windows** is the default in the language menu: Japanese Windows shows Japanese, Turkish Windows shows Turkish, and anything else (English, unsupported languages, or if the language cannot be read) shows English. It is checked at every launch
+- Choosing 日本語, English, or Türkçe in the menu takes priority (a language chosen in an older version is kept)
+- In Japanese, settings, buttons, preview hints, and the log use Noto Sans JP (Regular), or Meiryo (regular weight) if Noto Sans JP is not installed. English and Turkish keep the existing fonts
 
 ### remove.bg and privacy
 
@@ -376,9 +402,9 @@ Keep `FM Face Processor.py`, `requirements.txt`, and the `assets` folder in the 
 | Face and ID are paired incorrectly | Check capture times or place each person's files in a separate subfolder |
 | Background is not removed | Enable local AI or remove.bg and check the processing log |
 | remove.bg is unavailable | Check the API key and connection; the app automatically falls back to local AI |
-| Face is too large or cropped | Increase **Face size** or adjust position and zoom in the preview |
-| Neck is too long | Enable **Preview before saving** and gradually increase **Shorten neck** |
-| Face is tilted | Enable **Auto-level eyes**, then fine-tune the angle in the preview if needed |
+| Face is too large or cropped | Increase **Face size** or move/enlarge the frame in the preview |
+| Neck is too long / collar is outside the frame | In the preview, raise each side of the collar with **Select collar** (or Shift+drag) |
+| Face is tilted | Enable **Auto-level eyes**, then fine-tune the rotation in the preview if needed |
 | Upscaling fails | Turn off **AI upscale (Real-ESRGAN)** or extract the release ZIP again |
 | EXE does not start | Fully extract the ZIP and launch it with the complete folder intact |
 
