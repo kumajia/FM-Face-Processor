@@ -2606,6 +2606,14 @@ class App(tk.Tk):
                 t("確認", "Notice", 'Uyarı'),
                 t(f"ブラウザを開けませんでした: {e}", f"Could not open the browser: {e}", f'Tarayıcı açılamadı: {e}'))
 
+    def _open_kofi(self):
+        try:
+            webbrowser.open("https://ko-fi.com/kumajia")
+        except Exception as e:  # noqa: BLE001
+            messagebox.showwarning(
+                t("確認", "Notice", 'Uyarı'),
+                t(f"ブラウザを開けませんでした: {e}", f"Could not open the browser: {e}", f'Tarayıcı açılamadı: {e}'))
+
     def _show_id_help(self):
         existing = getattr(self, "_help_window", None)
         if existing is not None and existing.winfo_exists():
@@ -2738,6 +2746,9 @@ class App(tk.Tk):
         self.help_btn = ttk.Button(btns, text=t("使い方", "Guide", 'Rehber'),
                                    command=self._show_id_help)
         self.help_btn.pack(side="right", padx=(0, 4))
+        self.kofi_btn = ttk.Button(btns, text=t("支援", "Support", 'Destek'),
+                                   command=self._open_kofi)
+        self.kofi_btn.pack(side="right", padx=(0, 4))
 
         # ── フォルダ選択 ────────────────────────────────────────
         fld = ttk.LabelFrame(outer, text=t("フォルダ", "Folders", 'Klasörler'), padding=8)

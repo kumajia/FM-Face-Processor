@@ -11,6 +11,7 @@
 [![Python](https://img.shields.io/badge/Source-Python%203.12-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/kumajia/FM-Face-Processor?label=Release)](https://github.com/kumajia/FM-Face-Processor/releases/latest)
+[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/kumajia)
 
 </div>
 
@@ -19,6 +20,8 @@
 ## 日本語
 
 Football Manager用の選手・スタッフ顔グラフィックを半自動で作るWindowsアプリです。顔写真とFM内IDのスクリーンショットを入力すると、高画質化・背景透過・顔トリミング・`config.xml`生成までまとめて行います。
+
+> **支援のお願い：** 本ツールは今後も無料で提供します。役に立ったと感じたら、[Ko-fi](https://ko-fi.com/kumajia)から開発継続のための任意の支援をいただけると嬉しいです（支援は完全に任意です）。
 
 ### クイックスタート
 
@@ -195,14 +198,6 @@ py -3.12 "FM Face Processor.py"
 
 解決しない場合は[新しいIssueを作成](https://github.com/kumajia/FM-Face-Processor/issues/new)し、アプリのバージョン、FMのバージョン、症状、再現手順、処理ログを記載してください。公開前に、ログや画像から本名・メールアドレス・APIキーなどを削除してください。
 
-### 支援
-
-FM Face Processorは今後も無料で提供します。開発の継続を支援したい方は、Ko-fiから任意でサポートできます。
-
-[FM Face Processorを支援する](https://ko-fi.com/kumajia)
-
-支援は完全に任意です。FM Face Processorをご利用いただき、ありがとうございます。
-
 ### ライセンス
 
 このリポジトリ内で作者が作成したソースコードは[MIT License](LICENSE)で提供しています。
@@ -224,6 +219,8 @@ FM Face Processorは今後も無料で提供します。開発の継続を支援
 ## English
 
 FM Face Processor is a semi-automatic Windows app for creating Football Manager player and staff face graphics. Give it a face photo and an in-game ID screenshot, and it can upscale the image, remove its background, crop the face, and generate `config.xml`.
+
+> **Support:** FM Face Processor is free and will remain free. If it saved you time, you can support its continued development on [Ko-fi](https://ko-fi.com/kumajia) — completely optional, and thank you for using it.
 
 ### Quick start
 
@@ -399,14 +396,6 @@ Keep `FM Face Processor.py`, `requirements.txt`, and the `assets` folder in the 
 | EXE does not start | Fully extract the ZIP and launch it with the complete folder intact |
 
 If the problem remains, [open a new Issue](https://github.com/kumajia/FM-Face-Processor/issues/new) and include the app version, FM version, symptoms, reproduction steps, and processing log. Remove names, email addresses, API keys, and other personal information from logs and images before posting them publicly.
-
-### Support
-
-FM Face Processor is and will remain free to use. If it has saved you time and you would like to support continued development, you can do so on Ko-fi.
-
-[Support FM Face Processor](https://ko-fi.com/kumajia)
-
-Support is completely optional. Thank you for using FM Face Processor.
 
 ### License
 
